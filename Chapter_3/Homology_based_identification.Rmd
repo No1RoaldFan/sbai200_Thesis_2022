@@ -1,0 +1,297 @@
+---
+title: "Homology-based identification of sex-linked contigs"
+author: "sbai200"
+date: "27/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## merge the paternal Z ch with the maternal assembly
+
+```{bash, eval = FALSE}
+cat bTaeGut2.mat.v3 pat_Z.fasta > bTaeGut2.mat_plus_patZ.fasta
+```
+
+## RagTag
+
+```{bash, eval = FALSE}
+# installed ragtag via bioconda (https://bioconda.github.io/)
+ragtag.py scaffold  -u bTaeGut2.mat_plus_patZ.fasta <asm.fasta>
+
+mv ragtag_output/ <output_directory>
+```
+
+## NUCmer
+
+```{bash, eval = FALSE}
+# intalled mummer via bioconda
+
+# run alignments
+nucmer -b 400 -p <prefix> pat_Z.fasta <asm.fasta>
+
+nucmer -b 400 -p <prefix> mat_W.fasta <asm.fasta>
+
+nucmer -b 400 -p <prefix> mat_W_PAR.fasta <asm.fasta>
+
+# remove multiple alignments
+delta-filter -1 <.delta> > <.delta_filter>
+
+#To convert output to something more human-friendly
+show-coords <.delta_filter> > <.delta_filter.txt>
+
+```
+
+## Process the RagTag output
+
+```{r}
+ragtag_types <- list("f","n","n","n","f","f","n","n","f")
+ragtag_names <- c("Object", "Object_beg", "Object_end", "Part_number", "Component_type", "Component_id", "Component_beg", "Component_end", "Orientation")
+
+# import the data
+female_to_bTaeGut2mat_plus_Z.df <- read_delim("./../Data/female_ragtag.scaffold.agp", delim = " ", col_types = ragtag_types, col_names = ragtag_names)
+```
+
+
+### Female contigs to mat_W_PAR_RagTag
+
+```{r}
+levels(female_to_bTaeGut2mat_plus_Z.df$Component_id)
+
+# filter the bTaeGut2mat_plus_Z alignments for contigs aligning to the mat W PAR
+female_to_mat_W_PAR2 <- filter(female_to_bTaeGut2mat_plus_Z.df, Object == "mat_W_PAR_RagTag")
+```
+
+### Female contigs to mat_W_RagTag
+
+```{r}
+# filter all the bTaeGut2mat plus Z alignments for contigs aligning to the mat Z
+female_to_mat_W <- filter(female_to_bTaeGut2mat_plus_Z.df, Object == "mat_W_RagTag")
+
+# Because the alignments are gapped, remove the lines detailing the gaps
+female_to_mat_W <- filter(female_to_mat_W, Component_id != "100")
+
+RagTag_female_to_mat_W.df <- data.frame(female_to_mat_W$Component_id)
+colnames(RagTag_female_to_mat_W.df) <- "Component_id"
+nrow(RagTag_female_to_mat_W.df)
+
+W_contig_details.df <- left_join(RagTag_female_to_mat_W.df, female_to_bTaeGut2mat_plus_Z.df)
+summarise(W_contig_details.df, sum = sum(Component_end))
+
+# Extract list of contigs in a .csv file
+write.table(RagTag_female_to_mat_W.df, file = "female_to_mat_W.csv", sep = ",", row.names = TRUE, col.names = NA)
+```
+
+### Female contigs to pat_Z_RagTag
+
+```{r}
+female_to_pat_Z <- filter(female_to_bTaeGut2mat_plus_Z.df, Object == "pat_Z_RagTag")
+
+#Because the alignments are gapped, remove the lines detailing the gaps
+female_to_pat_Z <- filter(female_to_pat_Z, Component_id != "100")
+
+RagTag_female_to_pat_Z.df <- data.frame(female_to_pat_Z$Component_id)
+colnames(RagTag_female_to_pat_Z.df) <- "Component_id"
+nrow(RagTag_female_to_pat_Z.df)
+
+Z_contig_details.df <- left_join(RagTag_female_to_pat_Z.df, female_to_bTaeGut2mat_plus_Z.df)
+summarise(Z_contig_details.df, sum = sum(Component_end))
+
+# Extract list of contigs in a .csv file
+write.table(RagTag_female_to_pat_Z.df, file = "female_to_pat_Z.csv", sep = ",", row.names = TRUE, col.names = NA)
+```
+
+## Process the NUCmer output
+
+Before importing data, in Notepad ++, the first five lines/rows were deleted and the "|" and extra white spaces were removed. Blank space operations in the drop down menu was used to convert all tab spaces into regular spaces. CTRL+h was used to find  "|" and the white space and replace them just with " " (a single space).
+
+### Import the alignments of the female assembly to the W ch, W ch PAR and Z ch
+
+```{r}
+column_names <- c("S1", "E1", "S2", "E2", "LEN1", "LEN2", "%IDY", "Ref_ID", "Female_contig_ID")
+column_types <- list("n","n","n","n","n","n","n","f","f")
+
+# Import the alignment of the female genome to the zebra finch maternal W
+female_to_mat_W.df <- read_delim("./../Data/nucmer_female_medaka_to_mat_W_delta_filter - Copy.txt", delim = " ", col_types = column_types, col_names = column_names)
+
+# Import the alignment of the female genome to the zebra finch maternal W PAR
+female_to_mat_W_PAR.df <- read_delim("./../Data/nucmer_female_medaka_to_mat_W_PAR_delta_filter - Copy.txt", delim = " ", col_types = column_types, col_names =  column_names)
+
+# Import the alignment of the female genome to the zebra finch paternal Z
+female_to_pat_z.df <- read_delim("./../Data/nucmer_female_medaka_to_pat_Z_delta_filter - Copy.txt", delim = " ", col_types = column_types, col_names = column_names)
+```
+
+### Get lists of the contig names
+
+```{r}
+#Female contigs mapping to PAR
+female_to_mat_W_PAR.df$Female_contig_ID <- as.factor(female_to_mat_W_PAR.df$Female_contig_ID)
+female_contigs_to_PAR.df <- data.frame(levels(female_to_mat_W_PAR.df$Female_contig_ID))
+# give the contig name variable the same name as the RagTag alignments for the following steps
+colnames(female_contigs_to_PAR.df) <- "Female_contig_ID"
+
+#Female contigs mapping to W
+female_to_mat_W.df$Female_contig_ID <- as.factor(female_to_mat_W.df$Female_contig_ID)
+female_contigs_to_W.df <- data.frame(levels(female_to_mat_W.df$Female_contig_ID))
+colnames(female_contigs_to_W.df) <- "Female_contig_ID"
+
+#Female contigs mapping to Z
+female_to_pat_z.df$Female_contig_ID <- as.factor(female_to_pat_z.df$Female_contig_ID)
+female_contigs_to_Z.df <- data.frame(levels(female_to_pat_z.df$Female_contig_ID))
+colnames(female_contigs_to_Z.df) <- "Female_contig_ID"
+
+# Extract contig names into a .csv file
+write.table(female_contigs_to_W.df, file = "Nucmer_female_to_mat_W.csv", sep = ",", row.names = TRUE)
+write.table(female_contigs_to_PAR.df, file = "Nucmer_female_to_mat_PAR.csv", sep = ",", row.names = TRUE)
+write.table(female_contigs_to_Z.df, file = "Nucmer_female_to_Z.csv", sep = ",", row.names = TRUE)
+```
+
+### What proportion of the contig has been mapped?
+
+### Import genome.fai files
+
+```{r}
+column_names_fai <- c("Female_contig_ID", "Length", "Offset", "Line_bases", "Line_width")
+column_types_fai <- list(c,n,n,n,n)
+
+female_genome_fai.df <- read_delim("./../../../female_consensus_renamed.fasta - Copy.fai", delim = " ", col_types= , col_names = column_names_fai)
+```
+
+### Find the sum of length 2 for all contigs mapping to the maternal W PAR, maternal W and paternal Z
+
+Length 2 is the amount of the region of the contig that has been aligned.
+
+```{r}
+Female_mat_W_PAR_sum_len2.df <- female_to_mat_W_PAR.df %>% group_by(Female_contig_ID) %>% summarise("Female_PAR_sum_len2" = sum(LEN2), "Female_PAR_ave_percent_IDY" = mean(`%IDY`))
+
+Female_mat_W_sum_len2.df <- female_to_mat_W.df %>% group_by(Female_contig_ID) %>% summarise("Female_W_sum_len2" = sum(LEN2), "Female_W_ave_percent_IDY" = mean(`%IDY`))
+
+Female_pat_Z_sum_len2.df <- female_to_pat_z.df %>% group_by(Female_contig_ID) %>% summarise("Female_Z_sum_len2" = sum(LEN2), "Female_Z_ave_percent_IDY" = mean(`%IDY`))
+```
+
+### Calculate the proportion mapped
+
+```{r}
+# Female to maternal W PAR
+
+# match up the total contig lengths with this data table
+Female_mat_W_PAR_props.df <- female_genome_fai.df %>% 
+  select(-Offset, -Line_bases, -Line_width) %>% 
+  left_join(Female_mat_W_PAR_sum_len2.df, by = "Female_contig_ID") %>% na.omit()
+
+# Calculate the proportion of the contig that has been mapped
+Female_mat_W_PAR_props.df <- Female_mat_W_PAR_props.df %>% mutate("Female_PAR_prop_mapped" = Female_PAR_sum_len2/Length)
+
+# Female to maternal W proportions
+Female_to_mat_W_props.df <- female_genome_fai.df %>% 
+  select(-Offset, -Line_bases, -Line_width) %>% 
+  left_join(Female_mat_W_sum_len2.df, by = "Female_contig_ID") %>% na.omit()
+
+Female_to_mat_W_props.df <- Female_to_mat_W_props.df %>% mutate("Female_W_prop_mapped" = Female_W_sum_len2/Length)
+
+# Female to paternal Z proportions
+Female_to_pat_z_props.df <- female_genome_fai.df %>% 
+  select(-Offset, -Line_bases, -Line_width) %>% 
+  left_join(Female_pat_Z_sum_len2.df, by = "Female_contig_ID") %>% na.omit()
+Female_to_pat_z_props.df <- Female_to_pat_z_props.df %>% mutate("Female_Z_prop_mapped" = Female_Z_sum_len2/Length)
+```
+
+# The intersection of the RagTag and NUCmer alignments
+
+```{r}
+# Import Nucmer alignments
+Nucmer_female_contigs_to_mat_W.df <- read_csv("./../Nucmer/Results/Nucmer_female_to_mat_W.csv")
+Nucmer_female_contigs_to_pat_Z.df <- read_csv("./../Nucmer/Results/Nucmer_female_to_Z.csv")
+
+# Import RagTag alignments
+RagTag_female_contigs_to_mat_W.df <- read_csv("./../RagTag/Results/female_to_mat_W.csv")
+RagTag_female_contigs_to_pat_Z.df <- read_csv("./../RagTag/Results/female_to_pat_Z.csv")
+```
+
+## take the intersection
+
+```{r}
+names(RagTag_female_contigs_to_mat_W.df)[names(RagTag_female_contigs_to_mat_W.df) == 'Query_ID'] <- 'Female_contig_ID'
+Female_W_contigs <- intersect(Nucmer_female_contigs_to_mat_W.df[,1], RagTag_female_contigs_to_mat_W.df)
+nrow(Female_W_contigs)
+
+names(RagTag_female_contigs_to_pat_Z.df)[names(RagTag_female_contigs_to_pat_Z.df) == 'Query_ID'] <- 'Female_contig_ID'
+Female_Z_contigs <- intersect(Nucmer_female_contigs_to_pat_Z.df[,1], RagTag_female_contigs_to_pat_Z.df)
+nrow(Female_Z_contigs)
+```
+
+## What proportion of the contig has been mapped?
+
+## Female assembly
+
+```{r}
+column_names_fai <- c("Female_contig_ID", "Length", "Offset", "Line_bases", "Line_width")
+column_types_fai <- list(c,n,n,n,n)
+
+female_genome_fai.df <- read_delim("./../../female_consensus_renamed.fasta - Copy.fai", delim = " ", col_types= , col_names = column_names_fai)
+```
+
+## import Nucmer data
+
+```{r}
+column_names <- c("S1", "E1", "S2", "E2", "LEN1", "LEN2", "%IDY", "Ref_ID", "Female_contig_ID")
+column_types <- list("n","n","n","n","n","n","n","f","f")
+
+# Import the alignment of the female genome to the zebra finch maternal W
+female_to_mat_W.df <- read_delim("./../Nucmer/Data/nucmer_female_medaka_to_mat_W_delta_filter - Copy.txt", delim = " ", col_types = column_types, col_names = column_names)
+
+# Import the alignment of the female genome to the zebra finch paternal Z
+female_to_pat_z.df <- read_delim("./../Nucmer/Data/nucmer_female_medaka_to_pat_Z_delta_filter - Copy.txt", delim = " ", col_types = column_types, col_names = column_names)
+```
+
+
+## Joining contig lists to the nucmer dataset to get the length of the contig mapped
+
+```{r}
+# W chromosome seq
+Female_W_contigs.df <- left_join(Female_W_contigs, female_to_mat_W.df)
+Female_mat_W_sum_len2.df <- Female_W_contigs.df %>% group_by(Female_contig_ID) %>% summarise("Sum_len2" = sum(LEN2))
+colnames(Female_mat_W_sum_len2.df) <- c("Female_contig_ID", "Sum_len2")
+
+# Z chromosome seq
+Female_Z_contigs.df <- left_join(Female_Z_contigs, female_to_pat_z.df)
+Female_pat_Z_sum_len2.df <- Female_Z_contigs.df %>% group_by(Female_contig_ID) %>% summarise("Sum_len2" = sum(LEN2))
+colnames(Female_pat_Z_sum_len2.df) <- c("Female_contig_ID", "Sum_len2")
+```
+
+## Calculate the proportion mapped
+
+```{r}
+Female_to_mat_W_props.df <- female_genome_fai.df %>% 
+  select(-Offset, -Line_bases, -Line_width) %>% 
+  left_join(Female_mat_W_sum_len2.df, by = "Female_contig_ID") %>% na.omit()
+
+Female_to_mat_W_props.df <- Female_to_mat_W_props.df %>% mutate("Prop_mapped" = Sum_len2/Length)
+
+Female_to_pat_Z_props.df <- female_genome_fai.df %>% 
+  select(-Offset, -Line_bases, -Line_width) %>% 
+  left_join(Female_pat_Z_sum_len2.df, by = "Female_contig_ID") %>% na.omit()
+
+Female_to_pat_Z_props.df <- Female_to_pat_Z_props.df %>% mutate("Prop_mapped" = Sum_len2/Length)
+
+#get summary stats
+fivenum(Female_to_mat_W_props.df$Prop_mapped)
+mean(Female_to_mat_W_props.df$Prop_mapped)
+
+fivenum(Female_to_pat_Z_props.df$Prop_mapped)
+mean(Female_to_pat_Z_props.df$Prop_mapped)
+```
+
+# Three species alignments
+
+```{bash, eval = FALSE}
+ragtag.py scaffold  -u -i 0.7 bTaeGut2.mat_plus_patZ.fasta <asm.fasta>
+
+mv ragtag_output/ <output_directory>
+
+# Can install chromoMap via install.packages.
+#install.packages("chromoMap")
+```
+

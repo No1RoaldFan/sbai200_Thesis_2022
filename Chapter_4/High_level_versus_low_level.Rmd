@@ -1,0 +1,130 @@
+---
+title: "Ch4_HighvLow"
+author: "sbai200"
+date: "29/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# extract sites that have high methylation in one sex and low methylation in another
+
+```{r, eval=FALSE}
+library(dplyr)
+library(readr)
+
+clas <- read_delim("./classified_sites_whole_mutated_reduced_combined_reads_InnerJoin_180222.tsv", delim = "\t")
+
+one <- filter(clas, F_classification == "low_F" & M_classification == "high_M")
+write.table(one, "LowF_highM_sites_whole_mutated_reduced_combined_reads_InnerJoin_180222.tsv", row.names = FALSE, sep = "\t")
+
+two <- filter(clas, F_classification == "high_F" & M_classification == "low_M")
+write.table(two, "HighF_lowM_sites_whole_mutated_reduced_combined_reads_InnerJoin_180222.tsv", row.names = FALSE, sep = "\t")
+
+```
+
+# load packages
+
+```{r}
+library(readr)
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+```
+
+# import
+
+```{r}
+HighF_lowM.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Methylation/Results/HighF_lowM_sites_whole_mutated_reduced_combined_reads_InnerJoin_140322.tsv", delim = "\t")
+HighM_and_lowF.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Methylation/Results/HighM_lowF_sites_whole_mutated_reduced_combined_reads_InnerJoin_140322.tsv", delim = "\t")
+```
+
+# get chromosome type
+
+```{r}
+# import lists of sex-linked contigs
+sex_linked.df <- read_csv("D:/Hihi_Project/Sarahs_scripts/New assembly/Sex chromosome contig investigations/Z_or_W.csv")
+
+Z.df <- sex_linked.df[1:27,1]
+W.df <- sex_linked.df[,2]
+
+Z_vec <- pull(Z.df, Z)
+W_vec <- pull(W.df, W)
+
+Z_HighF_lowM.df <- HighF_lowM.df[HighF_lowM.df$chrom %in% Z_vec , ]
+Z_HighM_and_lowF.df <- HighM_and_lowF.df[HighM_and_lowF.df$chrom %in% Z_vec , ]
+
+# combine Z and W IDs
+names(W.df)[names(W.df) == 'W'] <- 'Z'
+sex_linked.df <- rbind(W.df, Z.df)
+sex_linked_vec <- pull(sex_linked.df, Z)
+
+# get all contig IDs
+all_HighF_lowM <- pull(HighF_lowM.df, chrom)
+# remove Z and W IDs
+A_HighF_lowM_vec <- setdiff(all_HighF_lowM, sex_linked_vec)
+# subset contigs not Z- or W-linked
+A_HighF_lowM.df <- HighF_lowM.df[HighF_lowM.df$chrom %in% A_HighF_lowM_vec , ]
+
+# get all contig IDs
+all_HighM_and_lowF <- pull(HighM_and_lowF.df, chrom)
+# remove Z and W IDs
+A_HighM_and_lowF_vec <- setdiff(all_HighM_and_lowF, sex_linked_vec)
+# subset contigs not Z- or W-linked
+A_HighM_and_lowF.df <- HighM_and_lowF.df[HighM_and_lowF.df$chrom %in% A_HighM_and_lowF_vec , ]
+```
+
+# get counts per contig
+```{r}
+Z_HighF_lowM.df <- Z_HighF_lowM.df %>% group_by(chrom) %>% summarise(count = length(chrom))
+Z_HighM_and_lowF.df <- Z_HighM_and_lowF.df %>% group_by(chrom) %>% summarise(count = length(chrom))
+
+A_HighF_lowM.df <- A_HighF_lowM.df %>% group_by(chrom) %>% summarise(count = length(chrom))
+A_HighM_and_lowF.df <- A_HighM_and_lowF.df %>% group_by(chrom) %>% summarise(count = length(chrom))
+```
+
+# remove contigs less than 50 kb
+
+```{r}
+fai.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Curated assemblies/female_curated_151121.fa.fai", delim = "\t", col_names = c("chrom", "len", "index", "bases", "bytes"))
+
+fai.df %<>% filter(len >= 50000) 
+fai.df <- fai.df[,c(1,2)]
+c <- pull(fai.df, chrom)
+
+Z_HighF_lowM.df <- Z_HighF_lowM.df[Z_HighF_lowM.df$chrom %in% c , ]
+Z_HighM_and_lowF.df <- Z_HighM_and_lowF.df[Z_HighM_and_lowF.df$chrom %in% c , ]
+
+A_HighF_lowM.df <- A_HighF_lowM.df[A_HighF_lowM.df$chrom %in% c , ]
+A_HighM_and_lowF.df <- A_HighM_and_lowF.df[A_HighM_and_lowF.df$chrom %in% c , ]
+
+# get contig lengths
+Z_HighF_lowM.df <- left_join(Z_HighF_lowM.df, fai.df)
+Z_HighM_and_lowF.df <- left_join(Z_HighM_and_lowF.df, fai.df)
+
+A_HighF_lowM.df <- left_join(A_HighF_lowM.df, fai.df)
+A_HighM_and_lowF.df <- left_join(A_HighM_and_lowF.df, fai.df)
+```
+
+```{r}
+Z_HighF_lowM.df %>% ggplot() + geom_point(aes(x = len, y = count), fill = "yellow", shape = 21, colour = "black", size = 3) +
+  ylab("Count") + xlab("Contig length (bp)") + theme_classic()+ theme(text = element_text(size = 18))
+```
+
+```{r}
+Z_HighM_and_lowF.df %>% ggplot() + geom_point(aes(x = len, y = count), fill = "slateblue", shape = 21, colour = "black", size = 3) +
+  ylab("Count") + xlab("Contig length (bp)") + theme_classic()+ theme(text = element_text(size = 18))
+```
+
+```{r}
+A_HighF_lowM.df  %>% ggplot() + geom_point(aes(x = len, y = count), fill = "yellow", shape = 21, colour = "black", size = 3) +
+  ylab("Count") + xlab("Contig length (bp)") + theme_classic()+ theme(text = element_text(size = 18))
+```
+
+```{r}
+A_HighM_and_lowF.df  %>% ggplot() + geom_point(aes(x = len, y = count), fill = "slateblue", shape = 21, colour = "black", size = 3) +
+  ylab("Count") + xlab("Contig length (bp)") + theme_classic()+ theme(text = element_text(size = 18))
+```
+

@@ -1,0 +1,340 @@
+---
+title: "Microsatellites"
+author: "sbai200"
+date: "28/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+getwd()
+```
+# load packages
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(viridis)
+```
+
+# clean up the phobos output
+
+```{r,eval=FALSE}
+
+read_gff <- function(file){
+  readr::read_tsv(
+    file,
+    col_names = c(
+        "seqid",
+        "source",
+        "type",
+        "start",
+        "stop",
+        "score",
+        "strand",
+        "phase",
+        "attr"
+    ),
+    na        = ".",
+    comment   = "#",
+    col_types = "ccciidcic"
+  )
+}
+
+mydata <- read_gff("./phobos_male.gff")
+
+# reformat the details in the attributes column
+Attributes_column <- mydata$attr %>% as.data.frame()
+colnames(Attributes_column) <- "attr"
+Attributes_column %<>% separate(attr, into = c("name", "other"), sep = "=")
+head(Attributes_column)
+Attributes_column$other <- gsub('"', '', Attributes_column$other)
+head(Attributes_column)
+Attributes_column %<>% separate(other, into = c("A", "repeat_region", "B", "unit_size", "C", "repeat_number", "D", "perfection", "E", "unit"), sep = " ")
+
+# create a nicely formatted dataset and save
+mydata <- bind_cols(mydata[,c(1:6)], Attributes_column[,c(3,5,7,9,11)])
+
+#write.table(mydata, "nicely_formatted_male_phobos.csv", col.names = TRUE, row.names = FALSE, sep = ",")
+```
+
+# filter microsats
+
+```{r,eval=FALSE}
+phobos.df <- read_csv("./nicely_formatted_male_phobos.csv", col_types = "fcciidciddf")
+
+phobos.df %<>% filter(unit_size != 1 & unit_size <= 6) # repeats with a unit size between 2 to 6 bp
+
+phobos.df %<>% filter(perfection >= 90) # repeats with a percentage perfection ≥ 90%
+
+phobos.df %<>% filter(repeat_number >= 3) # tetra-, penta- and hexanucleotide repeats ≥ 3 repeat units
+
+phobos.df %<>% mutate(len = (stop - start)+1) # calculate repeat length
+phobos.df %<>% filter((unit_size == 2 & len >= 10) | (unit_size == 3 & len >= 11)) #dinucleotide repeats ≥ 10 bp & trinucleotide repeats ≥ 11 bp
+```
+
+# separate into contig types
+
+```{r}
+female_filtered_phobos.df <- read_csv("D:/Hihi_Project/Sarahs_scripts/New assembly/Phobos/data/female_phobos_filtered.csv")
+male_filtered_phobos.df <- read_csv("D:/Hihi_Project/Sarahs_scripts/New assembly/Phobos/data/male_phobos_filtered.csv")
+
+# import lists of sex-linked contig IDs
+sex_linked_contigs.df <- read_csv("D:/Hihi_Project/Sarahs_scripts/New assembly/Phobos/data/Z_or_W.csv")
+```
+
+# subset the Z- and W-linked contigs
+
+```{r}
+female_Z.df <- inner_join(sex_linked_contigs.df[,1], female_filtered_phobos.df, c("Z" = "seqid"))
+female_W.df <- inner_join(sex_linked_contigs.df[,2], female_filtered_phobos.df, c("W" = "seqid"))
+
+male_Z.df <- inner_join(sex_linked_contigs.df[,3], male_filtered_phobos.df, c("Male_Z" = "seqid"))
+```
+
+# edit contig 65
+
+This contig was split during manual curation so these edits reflect that. 
+
+```{r}
+Contig_650.df <- female_Z.df %>% filter(Z == "Ncf_contig_65" & stop < 2942849)
+Contig_650.df$Z <- rep("Ncf_contig_650", nrow(Contig_650.df))
+
+Contig_652.df <- female_Z.df %>% filter(Z == "Ncf_contig_65" & stop >= 2942861)
+Contig_652.df$Z <- rep("Ncf_contig_652", nrow(Contig_652.df))
+
+female_Z.df <- female_Z.df %>% filter(Z != "Ncf_contig_65")
+female_Z.df <- rbind(female_Z.df, Contig_650.df)
+tail(female_Z.df)
+```
+
+# create autosomal subsets
+
+```{r}
+# add the second half of contig 65 to female autosomal set
+names(Contig_652.df)[1] <- "seqid"
+female_filtered_phobos.df <- rbind(female_filtered_phobos.df, Contig_652.df)
+
+# remove W-linked contigs
+names(female_W.df)[1] <- "seqid"
+not_W.df <- setdiff(female_filtered_phobos.df[,1], female_W.df[,1])
+
+# remove Z-linked contigs
+names(female_Z.df)[1] <- "seqid"
+female_autosome.df <- setdiff(not_W.df[,1], female_Z.df[,1])
+
+# remove Z-linked contigs
+names(male_Z.df)[1] <- "seqid"
+male_autosomes.df <- setdiff(male_filtered_phobos.df[,1], male_Z.df[,1])
+
+female_A.df <- inner_join(female_autosome.df[,1], female_filtered_phobos.df)
+male_A.df <- inner_join(male_autosomes.df[,1], male_filtered_phobos.df)
+```
+
+# create factors for plotting
+
+```{r}
+female_A.df$sex_ch <- rep("F_A", nrow(female_A.df))
+
+female_Z.df$sex_ch <- rep("F_Z", nrow(female_Z.df))
+
+female_W.df$sex_ch <- rep("F_W", nrow(female_W.df))
+
+male_A.df$sex_ch <- rep("M_A", nrow(male_A.df))
+
+male_Z.df$sex_ch <- rep("M_Z", nrow(male_Z.df))
+```
+
+# import contig lengths
+
+```{r}
+column_names_fai <- c("seqid", "Length", "Offset", "Line_bases", "Line_width")
+column_types_fai <- list("c","n","n","n","n")
+
+male_genome_fai.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Male_consensus_renamed - Copy.fai", col_names = column_names_fai, col_types = column_types_fai, delim = " ")
+male_genome_fai.df <- male_genome_fai.df[,c(1,2)] 
+male_genome_fai.df %<>% filter(Length >= 50000)
+
+female_genome_fai.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/female_consensus_renamed.fasta - Copy.fai", col_names = column_names_fai, col_types = column_types_fai, delim = " ")
+female_genome_fai.df <- female_genome_fai.df[,c(1,2)]
+female_genome_fai.df <- filter(female_genome_fai.df, seqid != "Ncf_contig_65")
+
+Contig_65.df <- data.frame(
+  seqid = c("Ncf_contig_650", "Ncf_contig_652"),
+  Length = c(2942849, 2941638)
+)
+
+female_genome_fai.df <- rbind(female_genome_fai.df, Contig_65.df)
+female_genome_fai.df %<>% filter(Length >= 50000)
+
+# remove contigs under 50 kb
+female_A.df <- inner_join(female_A.df, female_genome_fai.df)
+
+female_Z.df <- inner_join(female_Z.df, female_genome_fai.df)
+
+female_W.df <- inner_join(female_W.df, female_genome_fai.df)
+
+male_A.df <- inner_join(male_A.df, male_genome_fai.df)
+
+male_Z.df <- inner_join(male_Z.df, male_genome_fai.df)
+```
+
+# calculate the length of each chromosome type
+
+```{r}
+female_genome_size <-sum(female_genome_fai.df$Length)
+male_genome_size <- sum(male_genome_fai.df$Length)
+
+female_Z_length <- inner_join(sex_linked_contigs.df[,1], female_genome_fai.df, c("Z" = "seqid"))
+female_Z_length <- (sum(female_Z_length$Length) + 2942849)/1000000 # add contig 650 length
+
+female_W_length <- inner_join(sex_linked_contigs.df[,2], female_genome_fai.df, c("W" = "seqid"))
+female_W_length <- (sum(female_W_length$Length))/1000000 
+
+male_Z_length <- inner_join(sex_linked_contigs.df[,3], male_genome_fai.df, c("Male_Z" = "seqid"))
+male_Z_length <- (sum(male_Z_length$Length))/1000000 
+
+female_A_length <- ((female_genome_size - (female_W_length + female_Z_length)) + 2941638)/1000000  # add contig 652 length
+
+male_A_length <- (male_genome_size - male_Z_length)/1000000 
+```
+
+# calculate density
+
+```{r}
+female_A.df %<>% mutate(density_by_ch = len/female_A_length)
+
+female_Z.df %<>% mutate(density_by_ch = len/female_Z_length)
+
+female_W.df %<>% mutate(density_by_ch = len/female_W_length)
+
+male_A.df %<>% mutate(density_by_ch = len/male_A_length)
+
+male_Z.df %<>% mutate(density_by_ch = len/male_Z_length)
+```
+
+# calculate the total density of microsats on each chromosome type
+
+```{r}
+female_A_density <- sum(female_A.df$density_by_ch)
+male_A_density <- sum(male_A.df$density_by_ch)
+female_Z_density <- sum(female_Z.df$density_by_ch)
+male_Z_density <- sum(male_Z.df$density_by_ch)
+female_W_density <- sum(female_W.df$density_by_ch)
+```
+
+# calculate % of total microsats each microsat contributes
+
+```{r}
+female_A.df %<>% mutate(percent_density_by_ch = (density_by_ch/female_A_density)*100)
+female_W.df %<>% mutate(percent_density_by_ch = (density_by_ch/female_W_density)*100) 
+female_Z.df %<>% mutate(percent_density_by_ch = (density_by_ch/female_Z_density)*100)
+male_A.df %<>% mutate(percent_density_by_ch = (density_by_ch/male_A_density)*100) 
+male_Z.df %<>% mutate(percent_density_by_ch = (density_by_ch/male_Z_density)*100)
+
+# merge datasets
+density.df <- rbind(female_A.df, female_W.df, female_Z.df, male_A.df, male_Z.df)
+head(density.df)
+```
+# plot density per chromosome type
+
+```{r,eval=FALSE}
+density.df$sex_ch = factor(density.df$sex_ch, levels = c("F_A", "M_A", "F_Z", "M_Z","F_W"), ordered = TRUE)
+
+figure <- ggplot(density.df) +  geom_bar(aes(y = density_by_ch, x = sex_ch, fill = as.factor(unit_size)), position = position_stack(reverse = TRUE), 
+           data = density.df, stat="identity", width=0.75) + theme_classic()
+
+figure <- figure + scale_fill_viridis(discrete = TRUE, name = "Unit Size", labels = c("Dinucleotide", "Trinucleotide", "Tetranucleotide", "Pentanucleotide", "Hexanucleotide"))
+
+figure <- figure + labs( x = "Chromosome Type", y = "Microsatellite Density") + 
+  theme(text = element_text(size=16))
+
+figure <- figure + scale_x_discrete(labels=c("F_W" = "\u2640 W", "M_Z" = "\u2642 Z", "F_Z" = "\u2640 Z", "M_A" = "\u2642 A", "F_A" = "\u2640 A"))
+
+ggsave(plot= figure, "Micro_density.png", width = 20, height = 11, units = 'cm')
+
+figure
+```
+# plot percent density per chromosome type
+
+```{r,eval=FALSE}
+figure <- ggplot() + 
+  geom_bar(aes(y = percent_density_by_ch, x = sex_ch, fill = as.factor(unit_size)), position = position_stack(reverse = TRUE), 
+           data = density.df, stat = "identity", width=0.75) + theme_classic() ##+ coord_flip()
+figure <- figure + scale_fill_viridis(discrete = TRUE, name = "Unit Size", labels = c("Dinucleotide", "Trinucleotide", "Tetranucleotide", "Pentanucleotide", "Hexanucleotide"))
+figure <- figure + labs( x = "Chromosome Type", y = "Percentage of Microsatellite Density") + 
+  theme(text = element_text(size=16))
+
+figure <- figure + scale_x_discrete(labels=c("F_W" = "\u2640 W", "M_Z" = "\u2642 Z", "F_Z" = "\u2640 Z", "M_A" = "\u2642 A", "F_A" = "\u2640 A"))
+#ggsave(plot = figure, "Percentage_of_micro_density.png", width = 20, height = 11, units = 'cm')
+
+figure
+```
+
+# get a summary of the density and percent density per chromosome type
+```{r}
+density_summary.df <- density.df %>% group_by(sex_ch, unit_size) %>% summarise(count = length(unit_size),
+                                                                               density = sum(density_by_ch),
+                                                                               percent_density =sum(percent_density_by_ch),
+                                                                               mean_len = mean(len),
+                                                                               SD_len = sd(len))
+write.table(density_summary.df, "density_summary.txt", row.names = FALSE)
+
+density_summary_total.df <- density.df %>% group_by(sex_ch) %>% summarise(count = length(sex_ch),
+                                                                               density = sum(density_by_ch),
+                                                                               percent_density =sum(percent_density_by_ch),
+                                                                               mean_len = mean(len),
+                                                                               SD_len = sd(len))
+write.table(density_summary_total.df, "density_summary_total.txt", row.names = FALSE)
+```
+# get counts and contig numbers for the male and female sets
+
+```{r}
+Male.df <- rbind(male_A.df, male_Z.df)
+Female.df <- rbind(female_A.df, female_Z.df, female_W.df)
+
+nrow(Female.df)
+nrow(Male.df)
+
+length(unique(Female.df$seqid))
+length(unique(Male.df$seqid))
+```
+
+```{r}
+Female.df <- Female.df %>% group_by(unit_size) %>% summarise(total_len = sum(len), mean_len = mean(len), SD_len = sd(len))
+Female.df <- Female.df %>% mutate(density = total_len/(female_genome_size/1000000))
+write.table(Female.df, "female_micro_summary.txt", row.names = FALSE)
+```
+
+```{r}
+Male.df <- Male.df %>% group_by(unit_size) %>% summarise(total_len = sum(len), mean_len = mean(len), SD_len = sd(len))
+Male.df <- Male.df %>% mutate(density = total_len/(male_genome_size/1000000))
+write.table(Male.df, "Male_micro_summary.txt", row.names = FALSE)
+```
+
+# compare motifs found on the sex chromosomes of other species with our data
+
+## import motifs reported in the literature
+
+```{r}
+lit_col_types <- list("c", "c", "i", "f") #column_types_fai <- list("c","n","n","n","n")
+from_lit.df <- read_csv("D:/Hihi_Project/Sarahs_scripts/New assembly/Phobos/data/from_literature.csv", col_types = lit_col_types)
+from_lit.df <- unique(from_lit.df[,2])
+```
+
+# find if they overlap our data and summarise
+
+```{r}
+sex_linked_density.df <- rbind(female_W.df, female_Z.df, male_Z.df)
+units_shared.df <- from_lit.df %>% inner_join(sex_linked_density.df)
+units_shared_summary <- units_shared.df %>% group_by(sex_ch, unit) %>% summarise(n = length(unit))
+#write.table(units_shared_summary, "units_shared_summary.txt", row.names = FALSE)
+```
+
+
+
+

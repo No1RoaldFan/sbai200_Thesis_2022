@@ -1,0 +1,453 @@
+---
+title: "Chapter 2"
+author: "sbai200"
+date: "21/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Basecalling
+
+```{bash, EVAL = FALSE}
+# Flowcells 1-4, guppy v4.2.2
+
+## HAC
+guppy_basecaller -i <path_to_fast5_directory> -s <path_to_out_directory> --config <path_to_dna_r9.4.1_450bps_hac.cfg> --device auto --recursive --records_per_fastq 4000 --qscore_filtering --min_qscore 7 --calib_detect --calib_reference lambda_3.6kb.fasta   
+
+# Flowcells 1-4, guppy v5.0.7
+
+## HAC
+guppy_basecaller -i <path_to_fast5_directory> -s <path_to_out_directory> --config <path_to_dna_r9.4.1_450bps_hac.cfg> --device auto  --recursive --records_per_fastq 4000 --min_qscore 7 --calib_detect --calib_reference lambda_3.6kb.fasta --detect_mid_strand_adapter
+
+## sup
+guppy_basecaller -i <path_to_fast5_directory> -s <path_to_out_directory> --config <path_to_dna_r9.4.1_450bps_sup.cfg> --device auto  --recursive --records_per_fastq 4000 --min_qscore 7 --calib_detect --calib_reference lambda_3.6kb.fasta --detect_mid_strand_adapter
+```
+
+Collate output using "cat *.fastq > <Concatenated_file.fastq>" 
+
+# Read processing
+
+```{bash, eval = FALSE}
+# Porechop
+python <path_to_porechop-runner.py> -i <Concatenated_file.fastq> -o <out_file_name> --discard_middle
+
+# Nanofilt
+
+## L ≥ 5 kb
+NanoFilt -l 5000 <out_file_after_porechop> > <out_file_name>
+
+## Q ≥ 10
+NanoFilt -q 10 <out_file_after_porechop> > <out_file_name>
+
+## L ≥ 5 kb & Q ≥ 10
+NanoFilt -l 5000 <out_file_after_Q10_filter> > <out_file_name>
+
+# NanoLyse (NotCin10.3 only)
+NanoLyse <out_file_after_Q10_filter> > <out_file_name>
+```
+
+# Read quality evaluation
+
+```{bash, eval = FALSE}
+# Nanostat
+
+echo "QC stats for unfiltered"
+NanoStat --fastq <out_file_after_porechop> -t 1 > Nanostat_sup_unfiltered
+
+echo "QC stats for L ≥ 5 kb"
+NanoStat --fastq <out_file_after_5kb_filter> -t 1 > Nanostat_filtered_pass_5kb
+
+echo "QC stats for Q ≥ 10"
+NanoStat --fastq <out_file_after_Q10_filter> -t 1 > Nanostat_sup_filtered_pass_q10
+
+echo "QC stats for L ≥ 5 kb & Q ≥ 10"
+NanoStat --fastq <out_file_after_Q10_5kb_filter> -t 1 > Nanostat_sup_filtered_pass_5kb_q10
+
+```
+
+# De novo assembly
+
+```{bash, eval = FALSE}
+# Flye
+flye --nano-raw <path_to_reads> --genome-size 1.0g --out-dir <path_to_out_directory> -t 16 --keep-haplotypes
+
+# Redbean/wdbt
+raven -t 8 <path_to_reads>  > <out_file_name>
+
+# Raven
+wtdbg2 -x ont  -g 1.1g -t 8 -i <path_to_reads> -fo <asm_name>
+
+wtpoa-cns -t 8 -i <asm_name>.ctg.lay.gz -fo <asm_name>.ctg.fa
+```
+
+# Polishing
+
+```{bash, eval = FALSE}
+# align reads to the assembly with Minimap2
+minimap2 -ax map-ont -t 8 <asm.fasta> <path_to_reads>  > <out_file_name>
+
+# Racon with -u
+racon -u -t 4 <path_to_reads>  <mapped_reads>  <asm.fasta>  > <out_file_name>
+
+# Racon with recommended settings for Medaka (gpu)
+racon -t 4 -m 8 -x -6 -g -8 -w 500 -c 4  -b  --cudaaligner-batches 4 <path_to_reads> <mapped_reads>  <asm.fasta>  > <out_file_name>
+
+# Medaka
+medaka_consensus -i <path_to_reads> -d <asm.fasta> -o <output_directory_name> -t 4 -m r941_min_sup_g507
+```
+
+# Assembly quality evaluation
+
+```{bash, eval = FALSE}
+# QUAST
+quast.py --est-ref-size 1060000000 <asm.fasta>
+
+# BUSCO v4.1.4
+cp -r $AUGUSTUS_CONFIG_PATH ~/MyAugustusConfig # when running for the first time only
+export AUGUSTUS_CONFIG_PATH=~/MyAugustusConfig
+
+busco  -i <asm.fasta>  -c 8 -o <output_directory_name> -m genome -l aves_odb10
+
+# BUSCO v5.1.3
+
+## medaka as the gene predictor
+busco -i <asm.fasta> -l aves_odb10 -o <output_directory_name> -m genome -c 24 
+
+## Augustus as the gene predictor
+busco -i <asm.fasta> -l aves_odb10 -o <output_directory_name> -m genome -c 24 --augustus
+```
+
+## plotting code for BUSCO was adapted from https://gitlab.com/ezlab/busco/-/blob/master/scripts/generate_plot.py
+
+```{r}
+"# BUSCO summary figure\n"
+"# @version 4.0.0\n"
+"# @since BUSCO 2.0.0\n"
+"# \n"
+"# Copyright (c) 2016-2021, Evgeny Zdobnov (ez@ezlab.org)\n"
+"# Licensed under the MIT license. See LICENSE.md file.\n"
+
+# Load the required libraries
+library(ggplot2)
+library(grid)
+library(tidyverse)
+library(reshape2)
+library(viridis)
+
+## Format dataframe
+data1 <- read_csv("./NotCin10.csv", col_names = c("my_species", "S", "D", "F", "M"), skip = 1)
+
+#head(data1)
+#my_species S D F M
+#<chr> <dbl> <dbl>  <dbl> <dbl>
+#NotCin10.1	94.9	0.5	1.3	3.3
+#NotCin10.2	95.1	0.5	1.1	3.3
+#NotCin10.3	95.9	0.5	0.8	2.8
+
+data1 <- melt(data1, id.vars = "my_species", measure.vars = c("S", "D", "F", "M"), 
+              value.name = "my_percentage", variable.name = "category")
+
+data2 <- read_csv("./NotCin10vals.csv", col_names = c("my_species", "S", "D", "F", "M"), skip = 1) 
+
+#head(data2)
+#my_species S D F M
+#<chr> <dbl> <dbl>  <dbl> <dbl>
+#NotCin10.1	7916	38	111	273
+#NotCin10.2	7931	38	90	279
+#NotCin10.3	7995	39	67	237
+
+data2 <- melt(data2, id.vars = "my_species", measure.vars = c("S", "D", "F", "M"), 
+              value.name="my_values", variable.name = "category")
+
+df <- left_join(data1, data2)
+df <- df[,c(1,3,4,2)]
+
+#!!! CONFIGURE YOUR PLOT HERE !!!
+# output
+my_output <- paste("<directory_path>",sep="/") # edit directory path
+my_width <- 20
+my_height <- 15
+my_unit <- "cm"
+ 
+# Colors
+my_colors <- c("#66CB5DFF", "#FDE725FF", "#35608DFF",  "#1F988BFF") # sourced from the viridis package using "viridis(4,begin = .3)"
+# Bar height ratio
+my_bar_height <- 0.75
+
+# Legend
+my_title <- "BUSCO Assessment Results"
+
+# Font 
+my_family <- "sans"
+my_size_ratio <- 1
+
+# !!! SEE YOUR DATA HERE !!!
+# Your data as generated by python, remove or add more
+df$my_species <- factor(df$my_species)
+levels(df$my_species)
+
+df$my_species <- factor(df$my_species,levels(df$my_species)[c(length(levels(df$my_species)):1)])
+ 
+# Code to produce the graph
+labsize = 0.66
+print("Plotting the figure...")
+df$category <- factor(df$category)
+df$category
+
+figure <- ggplot() + 
+  geom_bar(aes(y = my_percentage, x = my_species, fill = category), position = position_stack(reverse = TRUE), data = df, stat="identity", 
+  width=my_bar_height) +
+  coord_flip() +
+  theme_gray(base_size = 8) +
+  scale_y_continuous(labels = c("0","20","40","60","80","100"), breaks = c(0,20,40,60,80,100)) +
+  scale_fill_manual(values = my_colors,labels =c(" Complete (C) and single-copy (S)  ",
+                                               " Complete (C) and duplicated (D)",
+                                                " Fragmented (F)  ",
+                                                " Missing (M)")) + 
+xlab("") + 
+ylab("\nPercentage of BUSCOs") +
+theme(legend.position="top",legend.title = element_blank()) + 
+theme(legend.text = element_text(family=my_family, size = rel(1.2)*my_size_ratio)) + 
+theme(panel.background = element_rect(color="#FFFFFF", fill="white")) + 
+theme(panel.grid.minor = element_blank()) + 
+theme(panel.grid.major = element_blank()) +
+theme(axis.text.y = element_text(family=my_family, colour = "black", size = rel(1.66)*my_size_ratio)) +
+theme(axis.text.x = element_text(family=my_family, colour = "black", size = rel(1.66)*my_size_ratio)) + 
+theme(axis.line = element_line(size=1*my_size_ratio, colour = "black")) + 
+theme(axis.ticks.length = unit(.85, "cm")) + 
+theme(axis.ticks.y = element_line(colour="white", size = 0)) + 
+theme(axis.ticks.x = element_line(colour="#222222")) + 
+theme(axis.ticks.length = unit(0.4, "cm")) + 
+theme(axis.title.x = element_text(family=my_family, size=rel(1.2)*my_size_ratio)) + 
+
+guides(fill = guide_legend(override.aes = list(colour = NULL))) +
+guides(fill=guide_legend(nrow=2,byrow=TRUE))
+
+for(i in rev(c(1:length(levels(df$my_species))))){
+  detailed_values <- df$my_values[df$my_species==df$my_species[df$my_species==levels(df$my_species)[i]]]
+  total_buscos <- sum(detailed_values)
+  figure <- figure + 
+  annotate("text", label=paste("C:", detailed_values[1] + detailed_values[2], " [S:", detailed_values[1], 
+", D:", detailed_values[2], "], F:", detailed_values[3], ", M:", detailed_values[4], ", n:", total_buscos, 
+sep=""), 
+           y=3, x = i, size = labsize*4*my_size_ratio, colour = "black", hjust=0, family=my_family)
+}
+
+ggsave(figure, file=my_output, width = my_width, height = my_height, unit = my_unit)
+
+print("Done")
+```
+
+# BLASTing the published hihi mitochondrial genome assembled from Sanger sequencing data 
+
+```{bash, eval = FALSE}
+# Make blast databases for each of the assemblies
+makeblastdb -dbtype nucl -parse_seqids -in <asm.fasta>
+
+# BLAST the published mitogenome against the assembly databases
+blastn  -query KC545400.1.fasta -db <asm.fasta> -out <out_file_name> -outfmt 6
+
+# download file, import into excel and use the top hit (NotCin10.3) or top hits covering the entire published mitogenome (NotCin7.2, NotCin8.2, NotCin9.2) to calculate quality measures using the following formulas:
+e=#mismatch/total_length
+QV=-10*LOG10(e)
+basecall_accuracy=(1-e)*100
+```
+
+# Blobtools contamination scan
+
+```{bash, eval = FALSE}
+# split the assembly into several files using SeqKit 
+## note: the subsets will be different sizes due to variation in contig size
+
+seqkit split female_consensus_renamed.fasta -p 40
+
+
+# loop for BLAST search
+
+## BLAST/2.10.0-GCC-9.2.0
+## BLASTDB/2021-05
+
+
+for infile in *.fasta # loops over each fasta file in the working directory
+do
+
+base=$(basename ${infile} .fasta) # takes the file prefix before fasta and saves it in a variable called base
+
+echo "starting with ${infile}"
+echo "subset ${base}"
+
+# search command
+blastn \ 
+ -query $infile \
+ -db /opt/nesi/db/blast/2021-05/nt \
+ -outfmt "6 qseqid staxids bitscore std" \
+ -max_target_seqs 1 \
+ -max_hsps 1 \
+ -evalue 1e-25 \
+ -out  BLAST_hsp1${base}.out
+ 
+echo "completed ${infile}"
+
+done
+
+# concatenate all hits files
+cat *out > <out_file_name> 
+
+# loop for diamond search
+
+## DIAMOND/2.0.9-GCC-9.2.0
+
+for infile in *.fasta # loops over each fasta file in the working directory
+do
+
+base=$(basename ${infile} .fasta) # takes the file prefix before fasta and saves it in a variable called base
+uniprot_diamond=<path_to_uniprot_ref_proteomes.diamond.dmnd> # save the path to the diamond database in a variable
+
+echo "starting with ${infile}"
+echo "subset ${base}"
+
+# search command
+diamond blastx \
+--query $infile \
+--max-target-seqs 1 \
+--sensitive \
+--threads 8 \
+--db $uniprot_diamond \
+--evalue 1e-25 \
+--outfmt 6 \
+--out ${base}_vs_uniprot_diamond.mts1.1e25.out
+
+echo "completed ${infile}"
+
+done
+
+# concatenate all hits files
+cat *out > <out_file_name> 
+
+# install blobtools with conda as per github installation instructions https://github.com/DRL/blobtools
+
+# add the NCBI TaxIDs of the subject sequences to the diamond hits
+blobtools taxify -f <Diamond_hits_file> -m <uniprot_taxids_file> -s 0 -t 2 
+
+# select the first three columns from each file
+cat <BLAST_hits_file> | awk '{print $1"\t"$2"\t"$3}' >  <out_file_name>
+cat <Diamond_hits_file> | awk '{print $1"\t"$2"\t"$3}' >  <out_file_name>
+
+asm=<asm.fasta>
+aln=<mapped_reads> # ONT reads mapped to the assembly with Minimap2, sorted, secondary reads removed and indexed (see Chapter 3)
+dia=<Diamond_hits>
+bla=<BLAST_hits>
+
+blobtools create -i $asm -o <out_file_name> -b $aln --db <NODESDB> -t $dia -t $bla
+#$BLOBTOOLS/data/nodesDB.txt
+
+# create plots
+blobtools view -i <.blobDB.json> --rank 'species'
+blobtools plot -i <.blobDB.json> -r 'species' -o <out_file_name> # with species
+blobtools plot -i <.blobDB.json> -r 'order' -o <out_file_name> # with order
+```
+
+# Recovering missing BUSCOs
+
+## get a list of buscos in the FLYE.5kb.q10 assembly but not the FLYE.5kb.q10_racon1.q10 assembly
+
+```{r}
+# load packages
+library(data.table)
+library(tidyverse)
+library(dplyr)
+
+getwd()
+
+# load data
+BUSCO_FLYE.df <- fread("./Data/BUSCO_FLYE.5kb.q10.tsv")
+BUSCO_FLYE.df$Status <- as.factor(BUSCO_FLYE.df$Status)
+levels(BUSCO_FLYE.df$Status)
+
+BUSCO_FLYE.racon1.df <- fread("./Data/BUSCO_FLYE.racon1.q10.tsv")
+BUSCO_FLYE.racon1.df$Status <- as.factor(BUSCO_FLYE.racon1.df$Status)
+
+## What genes are complete in the BUSCO FLYE.5kb.q10 dataset that are not complete in the BUSCO.racon1 dataset?
+Complete_FLYE <- BUSCO_FLYE.df %>% filter(Status == 'Complete') 
+Complete_FLYE.racon1 <- BUSCO_FLYE.racon1.df %>%  filter(Status == 'Complete')
+Complete_FLYE_only <- setdiff(Complete_FLYE$`# Busco id`, Complete_FLYE.racon1$`# Busco id`) %>% data.frame()
+colnames(Complete_FLYE_only) <- "# Busco id"
+Complete_FLYE_only.df <- left_join(Complete_FLYE_only, Complete_FLYE)
+
+## For those genes that appear in the BUSCO FLYE.5kb.q10 dataset and not the BUSCO.racon1 dataset, do they become fragemented or missing?
+
+# Generate a list of fragemented genes 
+Fragmented_FLYE.racon1 <- BUSCO_FLYE.racon1.df %>% filter(Status == 'Fragmented')
+Fragmented_FLYE.racon1 <- Fragmented_FLYE.racon1$`# Busco id` %>% data.frame
+colnames(Fragmented_FLYE.racon1) <- "# Busco id"
+
+# Generate a list of missing genes
+Missing_FLYE.racon1 <- BUSCO_FLYE.racon1.df %>% filter(Status == 'Missing')
+Missing_FLYE.racon1 <- Missing_FLYE.racon1$`# Busco id` %>% data.frame()
+colnames(Missing_FLYE.racon1) <- "# Busco id"
+
+# Take the list of the genes only complete in the BUSCO dataset and see if they intersect with the list of fragmented genes from the BUSCO.racon1 dataset. 
+Complete_in_fragmented_racon1 <- intersect(Complete_FLYE_only, Fragmented_FLYE.racon1)
+nrow(Complete_in_fragmented_racon1)
+
+# Take the list of the genes only complete in the BUSCO dataset and see if they intersect with the list of missing genes from the BUSCO.racon1 dataset.
+Complete_in_missing.racon1 <- intersect(Complete_FLYE_only, Missing_FLYE.racon1)
+nrow(Complete_in_missing.racon1)
+Complete_in_missing.racon1
+
+#Extract list of contigs
+write.table(Complete_in_missing.racon1, file = "missing_list.txt", row.names = FALSE, col.names = NA)
+
+#### Are the remaining genes duplicated?
+# Generate a list of duplicated genes
+Duplicated_FLYE.racon1 <- BUSCO_FLYE.racon1.df %>% filter(Status == 'Duplicated')
+Duplicated_FLYE.racon1 <- Duplicated_FLYE.racon1$`# Busco id` %>% data.frame()
+colnames(Duplicated_FLYE.racon1) <- "# Busco id"
+
+# find the genes that are complete in the unpolished assembly but duplicated in the polished assembly
+Complete_in_Duplicated_racon1 <- intersect(Complete_FLYE_only, Duplicated_FLYE.racon1)
+nrow(Complete_in_Duplicated_racon1)
+```
+
+## get the gene sequences for buscos in the FLYE.5kb.q10 assembly but not the FLYE.5kb.q10_racon1.q10 assembly
+
+```{bash, eval = FALSE}
+# take the single copy buscos found in the unpolished assembly and extract those that are missing in the polished assembly
+cd ~/myna_nobackup/Hihi_MinION/Female/Assemblies_phase2/Assembly_FLYE2.5kb.q10/FLYE2_5kb.q10_busco_4.1.4/run_aves_odb10/busco_sequences/single_copy_busco_sequences
+# put only those we want into a file
+cat /nesi/nobackup/uoa02613/Hihi_MinION/Female/Recovering_missing_buscos/missing_list.txt | while read line
+do
+echo $line
+cat ${line}.fna >> missing_sequences.fasta
+done
+
+minimap2 -ax splice /nesi/nobackup/uoa02613/Hihi_MinION/Female/Assemblies_phase2/Assembly_FLYE2.5kb.q10/Assembly_FLYE2.5kb.q10_racon1_q10.fasta missing_sequences.fasta > Busco_aln_FLYE2.5kb.q10_racon1_q10.sam
+minimap2 -ax splice /nesi/nobackup/uoa02613/Hihi_MinION/Female/Assemblies_phase2/Assembly_FLYE2.5kb.q10/assembly.fasta missing_sequences.fasta > Busco_aln_FLYE2.5kb.q10.sam
+
+samtools sort -o Busco_aln_FLYE2.5kb.q10.sorted.bam Busco_aln_FLYE2.5kb.q10.sam
+samtools sort -o Busco_aln_FLYE2.5kb.q10_racon1_q10.sorted.bam Busco_aln_FLYE2.5kb.q10_racon1_q10.sam
+
+bwa index Busco_aln_FLYE2.5kb.q10.sorted.bam
+bwa index Busco_aln_FLYE2.5kb.q10_racon1_q10.sorted.bam
+```
+
+## Are all of the missing genes mapped to the assemblies?
+
+```{bash, eval = FALSE, warning = FALSE}
+samtools flagstat Busco_aln_FLYE2.5kb.q10.sorted.bam
+samtools flagstat Busco_aln_FLYE2.5kb.q10_racon1_q10.sorted.bam
+```
+
+```{bash, eval = FALSE}
+bcftools call -m -v -o Busco_aln_FLYE2.5kb.q10_variants.vcf Busco_aln_FLYE2.5kb.q10.mpileup.bcf 
+bcftools call -m -v -o Busco_aln_FLYE2.5kb.q10_racon1_q10_variants.vcf Busco_aln_FLYE2.5kb.q10_racon1_q10.mpileup.bcf 
+
+bcftools query -f '%CHROM\t%POS\t%REF\t%ALT[\t%SAMPLE\t%GT\t%PL]\n' Busco_aln_FLYE2.5kb.q10_variants.vcf
+bcftools query -f '%CHROM\t%POS\t%REF\t%ALT[\t%SAMPLE\t%GT\t%PL]\n' Busco_aln_FLYE2.5kb.q10_racon1_q10_variants.vcf
+```
+
+Import output into excel. Match up the genome coordinates to find shared and unique variants.
+
