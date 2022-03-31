@@ -3,7 +3,7 @@ Collated code
 # Chapter 2
 Assembly pipeline
 # Chapter 3
-Relating to the identification of sex-linked contigs
-\nMicrosatellite identification
+Relating to the identification of sex-linked contigs\
+Microsatellite identification
 # Chapter 4
 Comparing sites with a high level of methylation in one sex and a low level of methylation in another
