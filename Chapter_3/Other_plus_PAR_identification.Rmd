@@ -1,0 +1,149 @@
+---
+title: "Ch_3"
+author: "sbai200"
+date: "04/04/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Combining homology-based and coverage-based evidence
+
+## load packages
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(magrittr)
+```
+
+## get list of haploid contigs
+
+```{r}
+haploid_types <- list("c", "i", "i", "i", "i", "n", "n", "n", "n", "i", "i", "n")
+
+haploid_contigs.df <- read_csv("./LowCov alignments/50kb bins/Results/female_to_female_new_5kb_filter.csv", col_names = TRUE, col_types = haploid_types)
+haploid_contigs.df <- haploid_contigs.df %>%  filter(Percent_hap > 0)
+```
+
+## nucmer alignments to Z and W
+
+```{r}
+nucmer_names <- c("S1", "E1", "S2", "E2", "LEN1", "LEN2", "%IDY", "Ref_ID", "Contig_id")
+nucmer_types <- list("n","n","n","n","n","n","n","f","f")
+
+# W Chromosome
+Nucmer_W_ch_alignments.df <- read_delim("./Zebra finch alignments/Nucmer/Data/nucmer_female_medaka_to_mat_W_delta_filter - Copy.txt", delim = " ", col_names = nucmer_names, col_types = nucmer_types)
+
+Nucmer_W_ch_alignments.df %<>% group_by(Contig_id) %>% summarise(Sum_len2 = sum(LEN2), Ave_identity = mean(`%IDY`)) 
+
+# Z Chromosome
+Nucmer_Z_ch_alignments.df <- read_delim("./Zebra finch alignments/Nucmer/Data/nucmer_female_medaka_to_pat_Z_delta_filter - Copy.txt", delim = " ", col_names = nucmer_names, col_types = nucmer_types)
+
+Nucmer_Z_ch_alignments.df %<>% group_by(Contig_id) %>% summarise(Sum_len2 = sum(LEN2), Ave_identity = mean(`%IDY`))
+```
+
+## ragtag alignments to Z and W
+
+```{r}
+# W chromosome
+RagTag_W_ch_alignments.df <- read_csv("./Zebra finch alignments/RagTag/Results/female_to_mat_W.csv", col_names = "Contig_id", skip = 1)
+
+RagTag_Z_ch_alignments.df <- read_csv("./Zebra finch alignments/RagTag/Results/female_to_pat_Z.csv", col_names = "Contig_id", skip = 1)
+```
+
+## haploid contigs which intersect with ragtag and nucmer alignments to Z and W
+
+```{r}
+# W chromosome
+Ragtag_and_nucmer_W_ch.df <- inner_join(RagTag_W_ch_alignments.df, Nucmer_W_ch_alignments.df)
+haploid_contigs_in_ragtag_and_nucmer_W_ch.df <- inner_join(Ragtag_and_nucmer_W_ch.df, haploid_contigs.df)
+
+write.table(haploid_contigs_in_ragtag_and_nucmer_W_ch.df, "haploid_contigs_in_ragtag_and_nucmer_W_ch.csv", sep = ",", col.names = TRUE, row.names = FALSE)
+
+# Z chromosome
+Ragtag_and_nucmer_Z_ch.df <- inner_join(RagTag_Z_ch_alignments.df, Nucmer_Z_ch_alignments.df)
+haploid_contigs_in_ragtag_and_nucmer_Z_ch.df <- inner_join(Ragtag_and_nucmer_Z_ch.df, haploid_contigs.df)
+
+write.table(haploid_contigs_in_ragtag_and_nucmer_Z_ch.df, "haploid_contigs_in_ragtag_and_nucmer_Z_ch.csv", sep = ",", col.names = TRUE, row.names = FALSE)
+```
+
+# Comparison of the male and female genomes
+
+```{bash, eval=FALSE}
+
+#!/bin/bash -e
+
+#SBATCH --job-name=ragtag_female_medaka
+#SBATCH --output=AW_%j.out
+#SBATCH --error=AW_%j.err
+#SBATCH --mail-user=sbai200@aucklanduni.ac.nz
+#SBATCH --mail-type=END
+#SBATCH --time=00:45:00
+#SBATCH --mem=5G
+#SBATCH --ntasks=1
+#SBATCH --profile=task
+#SBATCH --account=uoa00338
+
+cd /nesi/nobackup/uoa02613/Hihi_MinION/Female/Downloads
+
+module purge
+
+module load Miniconda3
+
+source activate ragtag2
+
+echo "Starting to scaffold female assembly with male"
+ragtag.py scaffold  -u Male_medaka_assembly Female_medaka_assembly
+echo "Finished scaffolding"
+
+echo "Moving files to their own directory"
+mv ragtag_output/ female_medaka_to_male_medaka
+echo "Done"
+```
+
+# Confirmation of sex-linked contigs
+
+## load packages
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(magrittr)
+```
+
+## plot M/F mapping ratio adapted from https://github.com/lurebgi/BOPsexChr/blob/master/m2f_ratio.r
+
+```{r}
+mappable_site_SR <- ggplot(sex_linked2.df) + geom_point(aes(y=SR_Female_mean,x=SR_m_f_map,size=Interval,fill=S_classification),shape=21) +
+  ylab("Contig Mean (Female Coverage)")
+
+mappable_site_SR <- mappable_site_SR +  scale_fill_discrete(name  ="Classification", 
+                                                               breaks=c("Ch5", "W", "Z"), 
+                                                               labels=c("Chromosome 5", "W-linked", "Z-linked"))
+
+mappable_site_SR <- mappable_site_SR + scale_x_continuous(name = "Male/Female Mapping Ratio", limits = c(0,1))
+
+mappable_site_SR <- mappable_site_SR + theme_classic()
+
+mappable_site_SR <- mappable_site_SR +
+    theme(text = element_text(size=12),
+          legend.key.size = unit(1.5, "cm"),
+          legend.key.width = unit(1.5,"cm") 
+  )
+
+my_output <- paste("D:/Hihi_Project/Sarahs_scripts/New assembly/Sex chromosome contig investigations/","mf_map_figure.png",sep="/")
+my_width <- 20
+my_height <- 15
+my_unit <- "cm"
+
+ggsave(mappable_site_SR, file=my_output, width = my_width, height = my_height, unit = my_unit)
+```
+
+# Identifying the pseudoautosomal region (PAR)
+
+```{r}
+
+```
+

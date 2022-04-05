@@ -128,7 +128,232 @@ bedtools makewindows -g Female_consensus_renamed.fai -w 50000 > Female_consensus
 bedtools map -a Female_consensus_renamed.windows.bed -b female_to_female.edited.depth -c 4 -o median,mean,count > female_to_female_50kb.coverage
 ```
 
-R pipeline
+# long-read (ONT) alignments
+
+```{bash, eval=FALSE}
+minimap2 -ax map-ont -t 8 Female_renamed_assembly Female_q10_reads > Mapped_female_reads_to_female_assembly.sam # align with minimap2
+
+samtools sort -o Mapped_female_reads_to_female_assembly_sorted.bam -@ 16 Mapped_female_reads_to_female_assembly.sam # sort alignments
+
+samtools view -b -F 256 Mapped_female_reads_to_female_assembly_sorted.bam > Mapped_female_reads_to_female_assembly_sorted_F.bam # remove secondary alignments
+
+samtools index Mapped_female_reads_to_female_assembly_sorted_F.bam # index alignments
+
+# calculate genomic depth of coverage as above
+```
+
+# R pipeline for whole contig cov
+
+## Load packages
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(magrittr)
+```
+
+## Import data
+
+```{r}
+female_columns <- c("Contig_id", "Female_start", "Female_end", "Female_median", "Female_mean", "Female_count")
+male_columns <- c("Contig_id", "Male_start", "Male_end", "Male_median", "Male_mean", "Male_count")
+types <- list("f", "i", "i", "i", "n", "i")
+f2f_cov.df <- read_delim("female_to_female_contig.coverage", delim = " ", col_names = female_columns, col_types = types)
+
+f2f_cov.df <- (f2f_cov.df[complete.cases(f2f_cov.df$Female_mean), ])
+
+m2f_cov.df <- read_delim("male_to_female_contig.coverage", delim = " ", col_names = male_columns, col_types = types)
+
+m2f_cov.df <- m2f_cov.df[complete.cases(m2f_cov.df[,5]), ]
+```
+
+## Normalise coverage
+
+```{r}
+correction_factor <- median(f2f_cov.df$Female_mean) / median(m2f_cov.df$Male_mean)
+
+m2f_cov.df %<>% mutate(normalised_mean = Male_mean * correction_factor) 
+```
+
+## Join the male and female datasets
+
+```{r}
+Contig_cov.df <- left_join(f2f_cov.df, m2f_cov.df, by = "Contig_id")
+Contig_cov.df[!complete.cases(Contig_cov.df),]
+```
+
+## Calculate the m:f cov
+
+```{r}
+Contig_cov.df %<>% mutate(m_f_ratio = normalised_mean / Female_mean)
+```
+
+## Calculate the ratio of male to female mappable sites
+
+```{r}
+Contig_cov.df %<>% mutate(m_map = Male_count / Female_end)
+Contig_cov.df %<>% mutate(f_map = Female_count / Female_end)
+Contig_cov.df %<>% mutate(m_f_map = m_map / f_map)
+```
+
+# R pipeline for 50 kb windows
+
+## Load packages
+
+```{r}
+library(magrittr)
+library(ggplot2)
+library(tidyverse)
+```
+
+## load data
+
+```{r}
+# name columns
+columns <- c("Contig_id", "Start", "End", "median", "mean", "count")
+types <- list("f", "i", "i", "i", "n", "i")
+# import data
+cov_50kb.df <- read_delim("female_to_female_50kb.coverage", delim = " ", col_names = columns, col_types = types)
+
+cov_50kb.df %>% group_by(Contig_id) %>% summarise(count = length(Contig_id))
+```
+
+## remove windows with no coverage
+
+```{r}
+no_cov <- cov_50kb.df[!complete.cases(cov_50kb.df$mean), ] # windows with no coverage
+nrow(no_cov) # number of windows with no cov
+
+cov_50kb.df <- cov_50kb.df[complete.cases(cov_50kb.df$mean), ] # remove no coverage windows
+cov_50kb.df %>% group_by(Contig_id) %>% summarise(count = length(Contig_id)) # how many contigs
+```
+
+## get the lengths of the contigs
+
+```{r}
+names_fai <- c("Contig_id", "Length", "Offset", "Line_bases", "Line_width")
+female_genome_fai.df <- read_delim("./../../../female_consensus_renamed.fasta - Copy.fai", delim = " ", col_names = names_fai)
+```
+
+## Remove small windows (smaller than 5Kb)
+
+```{r}
+cov_50kb.df %<>% mutate(window = End-Start) # Make windows
+
+cov_50kb.df %<>% filter(window > 5000) # remove small windows
+
+cov_50kb.df <- cov_50kb.df[complete.cases(cov_50kb.df$mean), ] # complete cases
+```
+
+## Remove the contigs that have less than 60% of the length covered by reads
+
+```{r}
+# get the sum of the count (the number of bases with coverage)
+contig_lengths <- cov_50kb.df %>%
+group_by(Contig_id) %>%
+summarise(Sum_count = sum(count))
+
+contig_lengths <- right_join(contig_lengths, female_genome_fai.df[,c(1,2)], by = "Contig_id") # add whole contig length
+contig_lengths <- contig_lengths[complete.cases(contig_lengths), ] # remove empty rows
+contig_lengths %<>% mutate(Percent_cov = Sum_count/Length*100) # get percentage of contig covered
+contig_lengths %<>% filter(Percent_cov >= 60) # remove contigs with less than 60% of bases covered
+
+# Join the coverage dataset to the filtered contig data
+filtered_50kb_cov.df <- inner_join(cov_50kb.df, contig_lengths)
+```
+
+## plot coverage distribution
+
+```{r}
+filtered_50kb.cov.df %>% ggplot(aes(x = mean)) + geom_histogram(binwidth = 0.5, fill = '#21908CFF') + theme_classic() + ylab("Count of 50kb \n non-overlapping windows") + xlab("Coverage") 
+```
+
+## Split the alignments up into four groups low coverage, haploid coverage, diploid coverage and high coverage based on cutoffs in the histograms
+
+```{r, warning=FALSE}
+L = <low cutoff>
+M = <middle cutoff>
+H = <high cutoff>
+
+# low coverage bins
+low_cov.df <- filtered_cov_50kb.df.df %>% filter(mean <= L)
+
+# half coverage bins
+haploid.df <- filtered_cov_50kb.df.df %>% filter(mean > L) %>% filter(mean <= M)
+
+# full coverage bins
+diploid.df <- filtered_cov_50kb.df.df %>% filter(mean > M) %>% filter(mean <= H)
+
+# high coverage bins
+high_cov.df <- filtered_cov_50kb.df.df %>% filter(mean > H)
+```
+
+## calculate how many bp of each contig are in the low_cov group
+
+```{r}
+bases_low.df <- low_cov.df %>%
+group_by(Contig_id) %>%
+summarise(Bases_low = sum(count))
+
+# add the full contig lengths to the dataframe
+bases_low.df <- inner_join(bases_low.df, female_to_female_contig_lengths)
+
+# add a new variable, % bases low
+bases_low.df  %<>%  mutate(Percent_low = (Bases_low / Sum_count) *100)
+```
+
+## calculate how many bp of each contig are in the haploid group
+
+```{r}
+bases_hap.df <- haploid.df %>%
+group_by(Contig_id) %>%
+summarise(Bases_hap = sum(count))
+# add the full contig lengths to the dataframe
+bases_hap.df <- inner_join(bases_hap.df, female_to_female_contig_lengths)
+# add a new variable, % bases hap
+bases_hap.df  %<>%  mutate(Percent_hap = (Bases_hap / Sum_count) *100)
+```
+
+## calculate how many bp of each contig are in the diploid group
+
+```{r}
+bases_dip.df <- diploid.df %>%
+group_by(Contig_id) %>%
+summarise(Bases_dip = sum(count))
+# add the full contig lengths to the dataframe
+bases_dip.df <- inner_join(bases_dip.df, female_to_female_contig_lengths)
+# add a new variable, % bases hap
+bases_dip.df  %<>%  mutate(Percent_dip = (Bases_dip / Sum_count) *100)
+```
+
+## calculate how many bp of each contig are in the high_cov group
+
+```{r}
+bases_high.df <- high_cov.df %>%
+group_by(Contig_id) %>%
+summarise(Bases_high = sum(count))
+# add the full contig lengths to the dataframe
+bases_high.df <- inner_join(bases_high.df, female_to_female_contig_lengths)
+# add a new variable, % bases hap
+bases_high.df  %<>%  mutate(Percent_high = (Bases_high / Sum_count) *100)
+```
+
+## create a new dataframe containing the # bp of each contig per group and the contig lengths 
+
+```{r}
+low_and_hap.df <- full_join(bases_low.df, bases_hap.df)
+dip_and_high.df <- full_join(bases_dip.df, bases_high.df)
+
+new.df <- full_join(low_and_hap.df, dip_and_high.df)
+
+# convert NA's into 0
+new.df[is.na(new.df)] <- 0
+
+# reorder columns
+new.df <- new.df[, c(1, 2, 7, 9, 11, 6, 8, 10, 12, 4, 3, 5)]
+```
+
+
 
 
 
