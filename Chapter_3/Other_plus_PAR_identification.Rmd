@@ -143,7 +143,54 @@ ggsave(mappable_site_SR, file=my_output, width = my_width, height = my_height, u
 
 # Identifying the pseudoautosomal region (PAR)
 
-```{r}
+## BLAST search
 
+```{bash, eval=FALSE}
+makeblastdb -dbtype nucl -parse_seqids -in <assembly.fasta>
+
+blastn  -query mat_W_PAR.fasta -db <assembly.fasta> -out <out_file> -html
+
+blastn  -query mat_W_PAR.fasta -db <assembly.fasta> -out <out_file> -outfmt 6
 ```
 
+## load and filter BLAST results
+
+```{r}
+blast_cols <- c("qseqid", "sseqid", "pident", "length", "mismatch", "gapopen", "qstart", "qend", "sstart", "send", "evalue", "bitscore")
+Female_PAR_BLAST.df <- read_delim("./../PAR_hits_to_female_medaka2", delim = "\t", col_names = blast_cols)
+
+Female_PAR_BLAST.df <- Female_PAR_BLAST.df %>% filter(evalue == 0)
+Female_PAR_BLAST.df <- Female_PAR_BLAST.df %>% filter(length >= 1000)
+Female_PAR_BLAST.df <- Female_PAR_BLAST.df %>% filter(pident >= 80)
+Female_PAR_BLAST.df %>%  group_by(sseqid) %>% summarise(total_length = sum(length))
+```
+
+## load lcWGS 50 kb window coverage and subset candidate PAR contigs
+
+```{r}
+female_to_female_50kb.cov <- read_delim("./../../LowCov alignments/50kb bins/Data/female_to_female_50kb.coverage", delim = " ", col_names = female_columns, col_types = types)
+male_to_female_50kb.cov <- read_delim("./../../LowCov alignments/50kb bins/Data/male_to_female_50kb.coverage", delim = " ", col_names = male_columns, col_types = types)
+
+
+correction_factor <- median(female_to_female_50kb.cov$female_mean) / median(male_to_female_50kb.cov$male_mean)
+
+male_to_female_50kb.cov %<>%  mutate(Male_normalised_cov = male_mean * correction_factor)
+
+
+Combined_cov.df2 <- right_join(female_to_female_50kb.cov, male_to_female_50kb.cov)
+Combined_cov.df2 %<>% mutate(m_f_ratio = Male_normalised_cov / female_mean)
+
+contig_1251.df <- filter(Combined_cov.df2, Contig_id == "Ncf_contig_1251")
+
+contig_369.df <- filter(Combined_cov.df2, Contig_id == "Ncf_contig_369")
+```
+
+## plot M/F coverage ratios across candidate PAR contigs
+
+```{r}
+contig_1251.plot <- ggplot(contig_1251.df, aes(x = Start, y = female_mean)) + geom_line() + xlab("Length (bp)") + ylab("Mean coverage")
+contig_1251.plot
+
+contig_369.plot <- ggplot(contig_369.df, aes(x = Start, y = female_mean)) + geom_line() + xlab("Length (bp)") + ylab("Mean coverage")
+contig_369.plot
+```

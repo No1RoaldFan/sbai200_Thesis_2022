@@ -17,15 +17,15 @@ library(readr)
 
 clas <- read_delim("./classified_sites_whole_mutated_reduced_combined_reads_InnerJoin_180222.tsv", delim = "\t")
 
-one <- filter(clas, F_classification == "low_F" & M_classification == "high_M")
+one <- filter(clas, F_percentmodbase <= 20 & M_percentmodbase >= 80)
 write.table(one, "LowF_highM_sites_whole_mutated_reduced_combined_reads_InnerJoin_180222.tsv", row.names = FALSE, sep = "\t")
 
-two <- filter(clas, F_classification == "high_F" & M_classification == "low_M")
+two <- filter(clas, F_percentmodbase >= 80 "high_F" & M_percentmodbase <= 20)
 write.table(two, "HighF_lowM_sites_whole_mutated_reduced_combined_reads_InnerJoin_180222.tsv", row.names = FALSE, sep = "\t")
 
 ```
 
-# load packages
+## load packages
 
 ```{r}
 library(readr)
@@ -34,14 +34,14 @@ library(magrittr)
 library(ggplot2)
 ```
 
-# import
+## import
 
 ```{r}
 HighF_lowM.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Methylation/Results/HighF_lowM_sites_whole_mutated_reduced_combined_reads_InnerJoin_140322.tsv", delim = "\t")
 HighM_and_lowF.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Methylation/Results/HighM_lowF_sites_whole_mutated_reduced_combined_reads_InnerJoin_140322.tsv", delim = "\t")
 ```
 
-# get chromosome type
+## get chromosome type
 
 ```{r}
 # import lists of sex-linked contigs
@@ -76,7 +76,8 @@ A_HighM_and_lowF_vec <- setdiff(all_HighM_and_lowF, sex_linked_vec)
 A_HighM_and_lowF.df <- HighM_and_lowF.df[HighM_and_lowF.df$chrom %in% A_HighM_and_lowF_vec , ]
 ```
 
-# get counts per contig
+## get counts per contig
+
 ```{r}
 Z_HighF_lowM.df <- Z_HighF_lowM.df %>% group_by(chrom) %>% summarise(count = length(chrom))
 Z_HighM_and_lowF.df <- Z_HighM_and_lowF.df %>% group_by(chrom) %>% summarise(count = length(chrom))
@@ -85,7 +86,7 @@ A_HighF_lowM.df <- A_HighF_lowM.df %>% group_by(chrom) %>% summarise(count = len
 A_HighM_and_lowF.df <- A_HighM_and_lowF.df %>% group_by(chrom) %>% summarise(count = length(chrom))
 ```
 
-# remove contigs less than 50 kb
+## remove contigs less than 50 kb
 
 ```{r}
 fai.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Curated assemblies/female_curated_151121.fa.fai", delim = "\t", col_names = c("chrom", "len", "index", "bases", "bytes"))
@@ -128,3 +129,76 @@ A_HighM_and_lowF.df  %>% ggplot() + geom_point(aes(x = len, y = count), fill = "
   ylab("Count") + xlab("Contig length (bp)") + theme_classic()+ theme(text = element_text(size = 18))
 ```
 
+# DMRT1
+
+## Downloaded gene sequences
+DMRT1 doublesex and mab-3 related transcription factor 1 [ Taeniopygia guttata (zebra finch) ]
+Gene ID: 100008584, updated on 16-Oct-2021
+
+https://www.ncbi.nlm.nih.gov/gene/?term=zebra+finch+DMRT1
+
+DMRT1 doublesex and mab-3 related transcription factor 1 [ Gallus gallus (chicken) ]
+Gene ID: 769693, updated on 23-Sep-2021
+
+https://www.ncbi.nlm.nih.gov/gene/769693
+
+## BLAST Z-linked contigs
+
+```{bash, eval=FALSE}
+# create database
+makeblastdb -dbtype nucl -parse_seqids -in Z_subset
+
+# query gene sequence
+blastn  -query ./chicken_DMRT1/ncbi_dataset/data/gene.fna -db Z_subset -out chicken_DMRT1_search.html -html
+
+blastn  -query ./chicken_DMRT1/ncbi_dataset/data/gene.fna -db Z_subset -out chicken_DMRT1_search.txt -outfmt 6
+
+blastn  -query ./zf_DMRT1/ncbi_dataset/data/gene.fna -db Z_subset -out zf_DMRT1_search.html -html
+
+blastn  -query ./zf_DMRT1/ncbi_dataset/data/gene.fna -db Z_subset -out zf_DMRT1_search.txt -outfmt 6
+```
+
+## import data
+
+```{r}
+blast_cols <- c("qseqid", "sseqid", "pident", "length", "mismatch", "gapopen", "qstart", "qend", "sstart", "send", "evalue", "bitscore")
+chicken.df <- read_delim("./results/chicken_DMRT1_search.txt", col_names = blast_cols, delim = "\t")
+zf.df <- read_delim("./results/zf_DMRT1_search.txt", col_names = blast_cols, delim = "\t")
+```
+
+## summarise by contig ID
+
+```{r}
+chicken.df %>% group_by(sseqid) %>% summarise(total = length(sseqid), size = sum(length), e = min(evalue), s = max(bitscore))
+zf.df %>% group_by(sseqid) %>% summarise(total = length(sseqid), size = sum(length), e = min(evalue), s = max(bitscore))
+```
+
+## arange by the query start to find start and end coordinates on Ncf_contig_95
+
+```{r}
+chicken.df <- chicken.df %>% filter(sseqid == "Ncf_contig_95")
+arrange(chicken.df, qstart)
+```
+
+## plot sex differences across Ncf_contig_95
+
+```{r}
+my_colours <- c("High female, low male" = "yellow", "High male, low female" = "slateblue")
+
+#head(Ncf_contig_95_Z_HighF_lowM.df)
+P <- ggplot() + geom_point(data = Ncf_contig_95_Z_HighF_lowM.df, aes(x = start, y = F_percentmodbase, fill = "High female, low male", colour = "High female, low male"), shape = 21, colour = "black", size = 3) +
+  geom_point(data = Ncf_contig_95_Z_HighF_lowM.df, aes(x = start, y = M_percentmodbase, fill = "High female, low male", colour = "High female, low male"), shape = 21, colour = "black", size = 3) +
+  geom_point(data = Ncf_contig_95_Z_HighM_and_lowF.df, aes(x = start, y = F_percentmodbase, fill = "High male, low female", colour = "High female, low male"), shape = 21, colour = "black", size = 3) +
+  geom_point(data = Ncf_contig_95_Z_HighM_and_lowF.df,aes(x = start, y = M_percentmodbase, fill = "High male, low female", colour = "High female, low male"), shape = 21, colour = "black", size = 3) + 
+  ylab("5mC %") + xlab("Position (bp)") +
+  scale_fill_manual(values = my_colours, name="Set") + theme(legend.position = "none") +
+  theme(text = element_text(size = 24))
+P
+#ggsave(plot = P, filename = "Ncf_contig_95_diff.png", height=8.5, width=12.5)
+```
+
+## zoom into DMRT1 coordinates
+
+```{r}
+P <- P + xlim(20100000,20200000) 
+P

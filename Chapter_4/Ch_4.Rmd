@@ -1,0 +1,315 @@
+---
+title: "Ch_4"
+author: "sbai200"
+date: "07/04/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## index bam files
+
+```{bash, eval = FALSE}
+data_folder=<file_path>
+
+find $data_folder -name "*.bam" | xargs -I {} samtools index {} 
+```
+
+## install modbam2bed (v0.3.2)
+
+```{bash, eval = FALSE}
+conda create --name modbam2bed
+source activate modbam2bed
+conda install -c bioconda -c conda-forge -c epi2melabs modbam2bed
+```
+
+## generate bed file
+
+```{bash, eval = FALSE}
+data_folder=<file_path>
+reference_genome=<file_path>
+
+modbam2bed -e -m 5mC --cpg -t 4 =$reference_genome $data_folder/*.bam > guppy_female_meth_summary.cpg.bam
+```
+
+## save methjoin
+
+```{python, eval = FALSE}
+
+import pandas as pd
+
+bedmethyl="guppy_female_meth_summary.cpg.bam"  #"guppy_female_genome_meth_summary.5mC.txt"
+methdata = pd.read_csv(
+bedmethyl, sep='\t',
+header=None,
+names=["chrom", "start", "end", "name", "score", "strand", "tstart", "tend", "color", "coverage", "freq", "canon", "mod", "filt"])
+
+import aplanat
+from aplanat import hist
+from bokeh.layouts import gridplot
+from aplanat import annot
+from bokeh.plotting import output_file, save
+
+names = ('fwd', 'rev')
+fwdmeth = methdata.loc[methdata['strand'] == "+"]
+revmeth = methdata.loc[methdata['strand'] == "-"]
+
+# join the reverse to the fwd assuming sites are one apart
+print("Joining forward and reverse strand joins assuming 1-base offset.")
+tmp = revmeth.copy()
+tmp['start'] -= 1
+tmp['end'] -= 1
+methjoin = pd.merge(fwdmeth, tmp, on=("chrom", "start"), suffixes=(".fwd", ".rev"))
+methjoin["coverage"] = methjoin["coverage.fwd"] + methjoin["coverage.rev"]
+
+#save data
+methjoin.to_csv('guppy_female_methjoin_5mC.tsv', sep='\t')
+```
+
+# remove unused columns
+```{bash, eval = FALSE}
+cat guppy_female_genome_methjoin_5mC.tsv | cut -f 1,2,5,6,7,8 - > reduced_guppy_female_genome_methjoin_5mC.tsv
+```
+
+# mutate datasets
+```{r}
+library(readr)
+library(dplyr)
+
+methobj <- read_delim("./reduced_guppy_female_methjoin_5mC.tsv", delim = "\t")
+
+# create new summaries female reads
+methobj <- methobj %>% mutate(F_modbase = mod.fwd + mod.rev)
+methobj <- methobj %>% mutate(F_freq = (F_modbase/coverage))
+methobj <- methobj %>% mutate(F_percentmodbase = F_freq*100)
+
+write.table(methobj, "mutated_reduced_guppy_female_methjoin_5mC.tsv", row.names = FALSE, sep = "\t")
+```
+
+# combine male and female
+
+```{r}
+library(readr)
+library(dplyr)
+
+options(warn = 1)
+
+# column names
+Female_colnames <- c("chrom", "start", "coverage", "F_modbase", "F_freq", "F_percentmodbase")
+Male_colnames <- c("chrom", "start", "coverage", "M_modbase", "M_freq", "M_percentmodbase")
+
+# load data
+methobj <- read_delim("./mutated_reduced_guppy_female_methjoin_5mC.tsv", col_names = Female_colnames, delim = "\t", skip = 1)
+methobj2 <- read_delim("./../Male/save_tables/mutated_reduced_guppy_male_methjoin_5mC.tsv", col_names = Male_colnames, delim = "\t", skip = 1)
+
+# join only male and female dataset rows found in both sets
+methobj3 <- inner_join(methobj, methobj2)
+
+# create file with intersecting data
+write.table(methobj3, "combined_5mC_InnerJoin.tsv", row.names = FALSE, col.names = TRUE, sep = "\t")
+```
+
+# correct the dataset to have all the female methylation calls for the W-linked contigs
+```{r}
+library(readr)
+library(dplyr)
+
+options(warn = 1)
+
+# create list of col names
+cname <- c("chrom", "start", "mod.fwd", "mod.rev", "coverage", "M_mod.fwd", "M_mod.rev", "M_coverage", "F_modbase", "F_freq", "F_percentmodbase", "M_modbase", "M_freq", "M_percentmodbase")
+
+# load data
+No_W.df <- read.table("./No_W_contigs_mutated_reduced_combined_reads_InnerJoin.tsv", col.names = cname, header = TRUE)
+W.df <- read.table("./Edited_W_contigs_guppy_female_genome_methjoin.tsv", col.names = cname, header = TRUE)
+
+methobj <- rbind(No_W.df, W.df)
+
+write.table(methobj, "Corrected_mutated_reduced_combined_reads_InnerJoin.tsv", row.names = FALSE, sep = "\t")
+```
+
+# density plots
+
+```{r}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(magrittr)
+
+options(warn = 1)
+
+# create list of col names
+cname <- c("chrom", "start", "mod.fwd", "mod.rev", "coverage", "M_mod.fwd", "M_mod.rev", "M_coverage", "F_modbase", "F_freq", "F_percentmodbase", "M_modbase", "M_freq", "M_percentmodbase")
+
+# load data
+methobj <- read.table("./Corrected_mutated_reduced_combined_reads_InnerJoin_201221.tsv", col.names = cname, header = TRUE)
+
+# filter for sites with at least 4x coverage
+methobj <- filter(methobj, coverage >= 5)
+methobj <- filter(methobj, M_coverage >= 5)
+
+# convert nas to zeros
+methobj$F_percentmodbase[is.na(methobj$F_percentmodbase)] <- 0
+methobj$M_percentmodbase[is.na(methobj$M_percentmodbase)] <- 0
+
+# get contig lengths
+fai.df <- read.table("./../female_curated_151121.fa.fai", col.names = c("chrom", "len", "index", "bases", "bytes"), header = FALSE)
+
+# remove contigs smaller than 50 kb
+fai.df %<>% filter(len >= 50000)
+fai.df <- fai.df[,c(1,2)]
+c <- fai.df[,1]
+
+methobj <- methobj[methobj$chrom %in% c , ]
+
+# import sex-linked contigs
+sex_linked.df <- read_csv("./Z_or_W.csv")
+
+# separate out Z- and W-linked contigs
+Z.df <- sex_linked.df[1:27,1]
+W.df <- sex_linked.df[,2]
+
+# get list of sex-linked contig names
+Z_vec <- pull(Z.df, Z)
+W_vec <- pull(W.df, W)
+
+# subset Z-linked contigs
+Z_methobj.df <- methobj[methobj$chrom %in% Z_vec , ]
+Z_methobj.df$Chromosome <- rep("Z-linked", nrow(Z_methobj.df))
+
+# subset W-linked contigs
+W_methobj.df <- methobj[methobj$chrom %in% W_vec , ]
+W_methobj.df$Chromosome <- rep("W-linked", nrow(W_methobj.df))
+
+# combine sex-linked contig IDS 
+names(W.df)[names(W.df) == 'W'] <- 'Z'
+sex_linked.df <- rbind(W.df, Z.df)
+sex_linked_vec <- pull(sex_linked.df, Z)
+
+# get list of all contig IDs
+all_con <- pull(methobj, chrom)
+# get autosomal and PAR contig IDs
+A_con_vec <- setdiff(all_con, sex_linked_vec)
+
+# create an autosomal and PAR subset
+A_methobj.df <- methobj[methobj$chrom %in% A_con_vec , ]
+#A_methobj.df <- filter(A_methobj.df, chrom != "Ncf_contig_1251")
+A_methobj.df$Chromosome <- rep("Autosomal", nrow(A_methobj.df))
+
+#PAR_methobj.df <- filter(methobj, chrom == "Ncf_contig_1251")
+#PAR_methobj.df$Chromosome <- "PAR"
+
+# generate two datasets, one with W-lnked contigs and one without
+F_only_methobj <- rbind(Z_methobj.df, W_methobj.df, A_methobj.df)#, PAR_methobj.df)
+Both_sexes_methobj <- rbind(Z_methobj.df, A_methobj.df)#, PAR_methobj.df)
+
+#methobj <- filter(methobj, chrom != "Ncf_contig_1251")
+F_only_methobj <- F_only_methobj %>% na.omit()
+F_only_methobj$Chromosome <- as.factor(F_only_methobj$Chromosome)
+
+Both_sexes_methobj <- Both_sexes_methobj %>% na.omit()
+Both_sexes_methobj$Chromosome <- as.factor(Both_sexes_methobj$Chromosome)
+
+# plot autosomal. PAR and Z-lnked contigs density
+legend <- c("Female" = "#fc8d59", "Male"= "#0570b0")
+
+all <- ggplot(data = Both_sexes_methobj) + geom_density(aes(M_percentmodbase, colour = "Male", fill = "Male"), alpha = .3) +
+  geom_density(aes(F_percentmodbase, colour = "Female", fill = "Female"), alpha = .3) +
+  theme_classic() +
+  xlab("5mC %") +
+  ylab("Density") +
+  scale_color_manual(values = legend,name="Sex") +
+  scale_fill_manual(values = legend,name="Sex") +
+  theme(text = element_text(size = 24))
+
+ggsave(plot = all,filename = "all_mean_methyl_50kb_plus.png", height=8.5, width=12.5)
+
+# plot female percent 5mC CpG methylation for autosomal. PAR, Z- and W-linked contigs
+Plots <- ggplot(data=F_only_methobj) + geom_density(aes(F_percentmodbase, colour = Chromosome, fill = Chromosome), alpha = .3) +
+      scale_color_viridis(discrete=TRUE) +
+      scale_fill_viridis(discrete = TRUE) +
+      theme_classic() +
+      xlab("5mC %") +
+      ylab("Density") +
+      guides(colour = guide_legend(title="Chromosome \ntype"),fill=guide_legend(title="Chromosome \ntype")) +
+      theme(legend.position = c(.8, .85), text = element_text(size = 24))
+
+ggsave(plot = Plots,filename = "female_mean_methyl_50kb_plus.png", height=8.5, width=12.5)
+
+# get the mean and standard deviation of female 5mC CpG methylation for autosomal. PAR, Z- and W-linked contigs
+T <- F_only_methobj %>% group_by(Chromosome) %>% summarise(ave = mean(F_percentmodbase), SD = sd(F_percentmodbase))
+write.table(T, "over_50kb_compare_sets_summary_F2.txt", sep = "\t", row.names = FALSE)
+
+# plot male percent 5mC CpG methylation for autosomal. PAR and Z-linked contigs
+Plots <- ggplot(data=Both_sexes_methobj) + geom_density(aes(M_percentmodbase, colour = Chromosome, fill = Chromosome), alpha = .3) +
+        scale_color_viridis(discrete=TRUE) +
+        scale_fill_viridis(discrete = TRUE) +
+        theme_classic() +
+        xlab("5mC %") +
+        ylab("Density") +
+        guides(colour = guide_legend(title="Chromosome \ntype"),fill=guide_legend(title="Chromosome \ntype")) +
+        theme(legend.position = c(.8, .85), text = element_text(size = 24))
+
+ggsave(plot = Plots,filename = "male_mean_methyl_50kb_plus.png", height=8.5, width=12.5)
+
+# get the mean and standard deviation of male 5mC CpG methylation for autosomal. PAR and Z-linked contigs
+T <- Both_sexes_methobj %>% group_by(Chromosome) %>% summarise(ave = mean(M_percentmodbase), SD = sd(M_percentmodbase))
+write.table(T, "over_50kb_compare_sets_summary_M2.txt", sep = "\t", row.names = FALSE)
+
+# get the overall mean and standard deviation of male and female 5mC CpG methylation
+mean(F_only_methobj$F_percentmodbase)
+sd(F_only_methobj$F_percentmodbase)
+
+mean(Both_sexes_methobj$F_percentmodbase)
+sd(Both_sexes_methobj$F_percentmodbase)
+
+mean(Both_sexes_methobj$M_percentmodbase)
+sd(Both_sexes_methobj$M_percentmodbase)
+```
+
+# Contig end methylation and coverage
+
+## classify dataset
+
+```{r}
+
+```
+
+## get level of methyation on ends
+
+```{r}
+
+
+```
+
+## contig end cov
+
+```{bash, eval = FALSE}
+int=updated_female_consensus_renamed.fasta.fai.bed.sorted.40kbints.bed
+genome=female_genome_edited.stat
+ali1=Male_LR_female_asm
+ali2=Female_LR_female_asm
+
+samtools depth $ali1 | awk '{print $1"\t"$2"\t"$2+1"\t"$3}' | bedtools map -a  $int -b - -c 4 -o mean -g $genome > $ali1.40kbints_mean.txt
+
+samtools depth $ali2 | awk '{print $1"\t"$2"\t"$2+1"\t"$3}' | bedtools map -a  $int -b - -c 4 -o mean -g $genome > $ali2.40kbints_mean.txt
+
+# combine the interval data
+cut -f 4 $ali2.40kbints_mean.txt | paste $ali1.40kbints_mean.txt - | awk '{print $1"\t"$2"\t"$3"\t"$4+$5}' > Combined_LR_female_asm.40kbints.mean.txt
+```
+
+# high, medium and low methylated sites
+
+```{r}
+
+```
+
+# correlation plot
+
+```{r}
+
+```
+
