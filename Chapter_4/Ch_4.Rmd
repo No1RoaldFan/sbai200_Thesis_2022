@@ -510,6 +510,224 @@ cut -f 4 $ali2.40kbints_mean.txt | paste $ali1.40kbints_mean.txt - | awk '{print
 
 ## classifying contig end cov
 
+```{r}
+library(tidyverse)
+library(magrittr)
+
+#import interval means for 10kb and 40kb
+mean_10kb.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Contig end cov/Female/Combined_LR_female_asm.10kbints.mean.txt", col_names = c("Contig", "Start", "End", "Mean"))
+mean_40kb.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Contig end cov/Female/Combined_LR_female_asm.40kbints.mean.txt", col_names = c("Contig", "Start_40kb", "End_40kb", "Mean_40kb"))
+
+#combine 10kb and 40kb means
+mean_10_40kb_combined.df <- cbind(mean_10kb.df[,c(1,2,4)], mean_40kb.df[,c(2,4)])
+
+#import interval medians for 10kb and 40kb
+median_10kb.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Contig end cov/Female/Combined_LR_female_asm.10kbints.median.txt", col_names = c("Contig", "Start", "End", "median"))
+median_40kb.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Contig end cov/Female/Combined_LR_female_asm.40kbints.median.txt", col_names = c("Contig", "Start_40kb", "End_40kb", "median_40kb"))
+
+#combine 10kb and 40kb medians
+median_10_40kb_combined.df <- cbind(median_10kb.df[,c(1,2,4)], median_40kb.df[,c(2,4)])
+colnames(median_10_40kb_combined.df)
+
+new.df <- cbind(mean_10_40kb_combined.df, median_10_40kb_combined.df[,c(3,5)])
+
+#import per contig coverage (from misassemblies)
+t <- list("c", "n", "n", "n", "n")
+female_to_female_contig.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Misassemblies/female_to_female_contig.coverage", delim = "\t", col_names = c("Contig", "Female_start", "Female_end", "Female_median", "Female_mean", "Female_count"), col_types = t, na = c("", "NA", "."))
+male_to_female_contig.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Misassemblies/male_to_female_contig.coverage", delim = "\t", col_names = c("Contig", "Male_start", "Male_end", "Male_median", "Male_mean", "Male_count"), col_types = t, na = c("", "NA", "."))
+contig_M_F_combined.df <- cbind(female_to_female_contig.df[,c(1,4,5)], male_to_female_contig.df[,c(4,5)])
+
+contig_M_F_combined.df %<>% mutate(combined_median = Female_median + Male_median, 
+       combined_mean = Female_mean + Male_mean
+       )
+
+# combine mean, median interval and contig datasets
+combined.df <- inner_join(new.df, contig_M_F_combined.df)
+head(combined.df)
+
+# get sets of chromosome types
+
+W.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Contig end cov/Female/female_W.txt", delim = "\t", col_names = "Contig") 
+
+A.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Contig end cov/Female/female_autosome.txt", delim = "\t", col_names = "Contig")
+
+Z.df <- read_delim("D:/Hihi_Project/Sarahs_scripts/New assembly/Contig end cov/Female/female_Z.txt", delim = "\t", col_names = "Contig")
+
+W_subset.df <- inner_join(combined.df, W.df)
+Z_subset.df <- inner_join(combined.df, Z.df)
+A_subset.df <- inner_join(combined.df, A.df)
+```
+
+## get the upper quartile of each set
+
+```{r}
+summary(W_subset.df[,c(12:13)])
+```
+
+```{r}
+summary(Z_subset.df[,c(12:13)])
+```
+
+```{r}
+summary(A_subset.df[,c(12:13)])
+```
+
+## use the upper quartile as the threshold for repetitive
+
+```{r}
+W_med_threshold <-12.00 
+W_mean_threshold <- 31.847
+
+Z_med_threshold <-47.00 
+Z_mean_threshold <- 51.03
+
+A_med_threshold <-57.00 
+A_mean_threshold <- 57.53 
+```
+
+## label the comparison (does the interval seem repetitive Y/N?)
+
+```{r}
+W_subset.df$Median_repetitive10kb <- rep("NA", nrow(W_subset.df))
+W_subset.df$Median_repetitive10kb[W_subset.df$median > W_med_threshold] <- "Y"
+W_subset.df$Median_repetitive10kb[W_subset.df$median <= W_med_threshold] <- "N"
+
+W_subset.df$Median_repetitive40kb <- rep("NA", nrow(W_subset.df))
+W_subset.df$Median_repetitive40kb[W_subset.df$median_40kb > W_med_threshold] <- "Y"
+W_subset.df$Median_repetitive40kb[W_subset.df$median_40kb <= W_med_threshold] <- "N"
+
+W_subset.df$Mean_repetitive10kb <- rep("NA", nrow(W_subset.df))
+W_subset.df$Mean_repetitive10kb[W_subset.df$Mean > W_mean_threshold] <- "Y"
+W_subset.df$Mean_repetitive10kb[W_subset.df$Mean <= W_mean_threshold] <- "N"
+
+W_subset.df$Mean_repetitive40kb <- rep("NA", nrow(W_subset.df))
+W_subset.df$Mean_repetitive40kb[W_subset.df$Mean_40kb > W_mean_threshold] <- "Y"
+W_subset.df$Mean_repetitive40kb[W_subset.df$Mean_40kb <= W_mean_threshold] <- "N"
+head(W_subset.df)
+```
+
+## summarise the comparison
+
+```{r}
+W_subset.df %<>% unite("Median_summary", c("Median_repetitive10kb", "Median_repetitive40kb"), sep = "_")
+W_subset.df %<>% unite("Mean_summary", c("Mean_repetitive10kb", "Mean_repetitive40kb"), sep = "_")
+head(W_subset.df)
+```
+
+## classify the contig ends
+
+```{r}
+W_subset.df$repeat_size_median <- rep("NA", nrow(W_subset.df))
+W_subset.df$repeat_size_median[W_subset.df$Median_summary == "Y_Y"] <- "long"
+W_subset.df$repeat_size_median[W_subset.df$Median_summary == "N_Y"] <- "long"
+W_subset.df$repeat_size_median[W_subset.df$Median_summary == "Y_N"] <- "short"
+W_subset.df$repeat_size_median[W_subset.df$Median_summary == "N_N"] <- "not_repetitive"
+
+W_subset.df$repeat_size_mean <- rep("NA", nrow(W_subset.df))
+W_subset.df$repeat_size_mean[W_subset.df$Mean_summary == "Y_Y"] <- "long"
+W_subset.df$repeat_size_mean[W_subset.df$Mean_summary == "N_Y"] <- "long"
+W_subset.df$repeat_size_mean[W_subset.df$Mean_summary == "Y_N"] <- "short"
+W_subset.df$repeat_size_mean[W_subset.df$Mean_summary == "N_N"] <- "not_repetitive"
+head(W_subset.df)
+
+write.csv(W_subset.df, "D:/Hihi_Project/Sarahs_scripts/New assembly/Contig end cov/Female/results/Classification_W_mean_and_median_100322.csv", row.names = FALSE)
+```
+
+## label the comparison (does the interval seem repetitive Y/N?)
+
+```{r}
+Z_subset.df$Median_repetitive10kb <- rep("NA", nrow(Z_subset.df))
+Z_subset.df$Median_repetitive10kb[Z_subset.df$median > Z_med_threshold] <- "Y"
+Z_subset.df$Median_repetitive10kb[Z_subset.df$median <= Z_med_threshold] <- "N"
+
+Z_subset.df$Median_repetitive40kb <- rep("NA", nrow(Z_subset.df))
+Z_subset.df$Median_repetitive40kb[Z_subset.df$median_40kb > Z_med_threshold] <- "Y"
+Z_subset.df$Median_repetitive40kb[Z_subset.df$median_40kb <= Z_med_threshold] <- "N"
+
+Z_subset.df$Mean_repetitive10kb <- rep("NA", nrow(Z_subset.df))
+Z_subset.df$Mean_repetitive10kb[Z_subset.df$Mean > Z_mean_threshold] <- "Y"
+Z_subset.df$Mean_repetitive10kb[Z_subset.df$Mean <= Z_mean_threshold] <- "N"
+
+Z_subset.df$Mean_repetitive40kb <- rep("NA", nrow(Z_subset.df))
+Z_subset.df$Mean_repetitive40kb[Z_subset.df$Mean_40kb > Z_mean_threshold] <- "Y"
+Z_subset.df$Mean_repetitive40kb[Z_subset.df$Mean_40kb <= Z_mean_threshold] <- "N"
+head(Z_subset.df)
+```
+
+## summarise the comparison
+
+```{r}
+Z_subset.df %<>% unite("Median_summary", c("Median_repetitive10kb", "Median_repetitive40kb"), sep = "_")
+Z_subset.df %<>% unite("Mean_summary", c("Mean_repetitive10kb", "Mean_repetitive40kb"), sep = "_")
+```
+
+## classify the contig ends
+
+```{r}
+Z_subset.df$repeat_size_median <- rep("NA", nrow(Z_subset.df))
+Z_subset.df$repeat_size_median[Z_subset.df$Median_summary == "Y_Y"] <- "long"
+Z_subset.df$repeat_size_median[Z_subset.df$Median_summary == "N_Y"] <- "long"
+Z_subset.df$repeat_size_median[Z_subset.df$Median_summary == "Y_N"] <- "short"
+Z_subset.df$repeat_size_median[Z_subset.df$Median_summary == "N_N"] <- "not_repetitive"
+
+Z_subset.df$repeat_size_mean <- rep("NA", nrow(Z_subset.df))
+Z_subset.df$repeat_size_mean[Z_subset.df$Mean_summary == "Y_Y"] <- "long"
+Z_subset.df$repeat_size_mean[Z_subset.df$Mean_summary == "N_Y"] <- "long"
+Z_subset.df$repeat_size_mean[Z_subset.df$Mean_summary == "Y_N"] <- "short"
+Z_subset.df$repeat_size_mean[Z_subset.df$Mean_summary == "N_N"] <- "not_repetitive"
+
+write.csv(Z_subset.df, "D:/Hihi_Project/Sarahs_scripts/New assembly/Contig end cov/Female/results/Classification_Z_mean_and_median_100322.csv", row.names = FALSE)
+```
+
+## label the comparison (does the interval seem repetitive Y/N?)
+
+```{r}
+A_subset.df$Median_repetitive10kb <- rep("NA", nrow(A_subset.df))
+A_subset.df$Median_repetitive10kb[A_subset.df$median > A_med_threshold] <- "Y"
+A_subset.df$Median_repetitive10kb[A_subset.df$median <= A_med_threshold] <- "N"
+
+A_subset.df$Median_repetitive40kb <- rep("NA", nrow(A_subset.df))
+A_subset.df$Median_repetitive40kb[A_subset.df$median_40kb > A_med_threshold] <- "Y"
+A_subset.df$Median_repetitive40kb[A_subset.df$median_40kb <= A_med_threshold] <- "N"
+
+A_subset.df$Mean_repetitive10kb <- rep("NA", nrow(A_subset.df))
+A_subset.df$Mean_repetitive10kb[A_subset.df$Mean > A_mean_threshold] <- "Y"
+A_subset.df$Mean_repetitive10kb[A_subset.df$Mean <= A_mean_threshold] <- "N"
+
+A_subset.df$Mean_repetitive40kb <- rep("NA", nrow(A_subset.df))
+A_subset.df$Mean_repetitive40kb[A_subset.df$Mean_40kb > A_mean_threshold] <- "Y"
+A_subset.df$Mean_repetitive40kb[A_subset.df$Mean_40kb <= A_mean_threshold] <- "N"
+head(A_subset.df)
+```
+
+## summarise the comparison
+
+```{r}
+A_subset.df %<>% unite("Median_summary", c("Median_repetitive10kb", "Median_repetitive40kb"), sep = "_")
+A_subset.df %<>% unite("Mean_summary", c("Mean_repetitive10kb", "Mean_repetitive40kb"), sep = "_")
+head(A_subset.df)
+```
+
+## classify the contig ends
+
+```{r}
+A_subset.df$repeat_size_median <- rep("NA", nrow(A_subset.df))
+A_subset.df$repeat_size_median[A_subset.df$Median_summary == "Y_Y"] <- "long"
+A_subset.df$repeat_size_median[A_subset.df$Median_summary == "N_Y"] <- "long"
+A_subset.df$repeat_size_median[A_subset.df$Median_summary == "Y_N"] <- "short"
+A_subset.df$repeat_size_median[A_subset.df$Median_summary == "N_N"] <- "not_repetitive"
+
+A_subset.df$repeat_size_mean <- rep("NA", nrow(A_subset.df))
+A_subset.df$repeat_size_mean[A_subset.df$Mean_summary == "Y_Y"] <- "long"
+A_subset.df$repeat_size_mean[A_subset.df$Mean_summary == "N_Y"] <- "long"
+A_subset.df$repeat_size_mean[A_subset.df$Mean_summary == "Y_N"] <- "short"
+A_subset.df$repeat_size_mean[A_subset.df$Mean_summary == "N_N"] <- "not_repetitive"
+
+write.csv(A_subset.df, "D:/Hihi_Project/Sarahs_scripts/New assembly/Contig end cov/Female/results/Classification_autosomal_PAR_mean_and_median_100322.csv", row.names = FALSE)
+```
+
+Import methylaion data and coverage data into excel and combine with XLOOKUP().
+
 ## plot methylation and contig end cov
 
 ```{r}
@@ -596,6 +814,7 @@ nrow(filter(methobj2, M_classification == "high_M"))
 ```
 
 ## plot high medium and low sites
+
 ```{r}
 library(readr)
 library(ggplot2)
