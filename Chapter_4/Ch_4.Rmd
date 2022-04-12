@@ -9,6 +9,8 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+# call methylaytion
+
 ## index bam files
 
 ```{bash, eval = FALSE}
@@ -68,12 +70,14 @@ methjoin["coverage"] = methjoin["coverage.fwd"] + methjoin["coverage.rev"]
 methjoin.to_csv('guppy_female_methjoin_5mC.tsv', sep='\t')
 ```
 
-# remove unused columns
+## remove unused columns
+
 ```{bash, eval = FALSE}
 cat guppy_female_genome_methjoin_5mC.tsv | cut -f 1,2,5,6,7,8 - > reduced_guppy_female_genome_methjoin_5mC.tsv
 ```
 
-# mutate datasets
+## mutate datasets
+
 ```{r}
 library(readr)
 library(dplyr)
@@ -88,7 +92,7 @@ methobj <- methobj %>% mutate(F_percentmodbase = F_freq*100)
 write.table(methobj, "mutated_reduced_guppy_female_methjoin_5mC.tsv", row.names = FALSE, sep = "\t")
 ```
 
-# combine male and female
+## combine male and female
 
 ```{r}
 library(readr)
@@ -111,7 +115,8 @@ methobj3 <- inner_join(methobj, methobj2)
 write.table(methobj3, "combined_5mC_InnerJoin.tsv", row.names = FALSE, col.names = TRUE, sep = "\t")
 ```
 
-# correct the dataset to have all the female methylation calls for the W-linked contigs
+## correct the dataset to have all the female methylation calls for the W-linked contigs
+
 ```{r}
 library(readr)
 library(dplyr)
@@ -191,22 +196,18 @@ sex_linked_vec <- pull(sex_linked.df, Z)
 
 # get list of all contig IDs
 all_con <- pull(methobj, chrom)
+
 # get autosomal and PAR contig IDs
 A_con_vec <- setdiff(all_con, sex_linked_vec)
 
 # create an autosomal and PAR subset
 A_methobj.df <- methobj[methobj$chrom %in% A_con_vec , ]
-#A_methobj.df <- filter(A_methobj.df, chrom != "Ncf_contig_1251")
 A_methobj.df$Chromosome <- rep("Autosomal", nrow(A_methobj.df))
 
-#PAR_methobj.df <- filter(methobj, chrom == "Ncf_contig_1251")
-#PAR_methobj.df$Chromosome <- "PAR"
-
 # generate two datasets, one with W-lnked contigs and one without
-F_only_methobj <- rbind(Z_methobj.df, W_methobj.df, A_methobj.df)#, PAR_methobj.df)
-Both_sexes_methobj <- rbind(Z_methobj.df, A_methobj.df)#, PAR_methobj.df)
+F_only_methobj <- rbind(Z_methobj.df, W_methobj.df, A_methobj.df)
+Both_sexes_methobj <- rbind(Z_methobj.df, A_methobj.df)
 
-#methobj <- filter(methobj, chrom != "Ncf_contig_1251")
 F_only_methobj <- F_only_methobj %>% na.omit()
 F_only_methobj$Chromosome <- as.factor(F_only_methobj$Chromosome)
 
@@ -275,14 +276,220 @@ sd(Both_sexes_methobj$M_percentmodbase)
 ## classify dataset
 
 ```{r}
+library(readr)
+library(dplyr)
+library(magrittr)
 
+options(warn = 1)
+
+# load data
+df <- read.table("./../Both_sexes_corrected_mutated_reduced_combined_reads_InnerJoin_201221.tsv", header = TRUE)
+
+# filter for sites with at least 5x coverage
+df <- filter(df, coverage >= 5)
+df <- filter(df, M_coverage >= 5)
+
+# remove NAs
+na.omit(df)
+
+# low_F coverage sites
+df_low_F <- df %>% filter(F_freq <=0.3)
+df_low_F$F_classification <- rep("low_F", nrow(df_low_F))
+
+# half coverage sites
+df_intermediate_F <- df %>% filter(F_freq >0.3) %>% filter(F_freq <=0.7)
+df_intermediate_F$F_classification <- rep("intermediate_F", nrow(df_intermediate_F))
+
+# full coverage sites
+df_high_F <- df %>% filter(F_freq >0.7) %>% filter(F_freq <=1)
+df_high_F$F_classification <- rep("high_F", nrow(df_high_F))
+
+# low_M coverage sites
+df_low_M <- df %>% filter(M_freq <=0.3)
+df_low_M$M_classification <- rep("low_M", nrow(df_low_M))
+
+# half coverage sites
+df_intermediate_M <- df %>% filter(M_freq >0.3) %>% filter(M_freq <=0.7)
+df_intermediate_M$M_classification <- rep("intermediate_M", nrow(df_intermediate_M))
+
+# full coverage sites
+df_high_M <- df %>% filter(M_freq >0.7) %>% filter(M_freq <=1)
+df_high_M$M_classification <- rep("high_M", nrow(df_high_M))
+
+# join male and female subsets
+f.df <- rbind(df_low_F, df_intermediate_F, df_high_F)
+m.df <- rbind(df_low_M, df_intermediate_M, df_high_M)
+
+# join datasets and combine male and female classifications
+classified.df <- full_join(f.df, m.df)
+
+# save
+write.table(classified.df, "Both_sexes_classified_sites_whole_mutated_reduced_combined_reads_InnerJoin_180322.tsv", row.names = FALSE, sep = "\t")
 ```
 
 ## get level of methyation on ends
 
 ```{r}
+library(readr)
+library(dplyr)
+library(magrittr)
 
+options(warn = 1)
 
+# load data
+classified.df <- read.table("./classified_sites_whole_mutated_reduced_combined_reads_InnerJoin_180322.tsv", header = TRUE)
+
+fai.df <- read.table("/nesi/nobackup/uoa02613/Hihi_MinION/FEMALE/Assembly_with_guppy_v5-0-7/curated_asm/female_split_assembly/female_asm.fai", col.names
+ = c("ID", "length", "x1", "x2", "x3"))
+fai.df <- fai.df[,1:2]
+
+output <- matrix(data = NA, nrow=532, ncol=6)
+
+# contig start
+
+for (i in 1:nrow(fai.df)) {
+
+  contig = fai.df[i,1]
+  contig_name <- contig %>% unlist(use.names = FALSE)
+  df1 <- filter(classified.df, chrom == contig_name)
+
+  df2 <- df1 %>% filter(start <= 40000)
+
+  mean_F <- mean(df2$F_freq)
+  mean_M <- mean(df2$M_freq)
+
+  median_F <- median(df2$F_freq)
+  median_M <- median(df2$M_freq)
+
+  output[i,1] <- contig_name
+  output[i,2] <- "start"
+  output[i,3] <- mean_F
+  output[i,4] <- mean_M
+  output[i,5] <- median_F
+  output[i,6] <- median_M
+
+}
+
+output %<>% data.frame()
+colnames(output) <- c("ID", "bin", "mean_F", "mean_M", "median_F", "median_M")
+
+write.csv(output, "summary_contig_start_start_180322.csv", row.names = FALSE)
+
+# contig ends
+
+output <- matrix(data = NA, nrow=532, ncol=6)
+
+for (i in 1:nrow(fai.df)) {
+  end = fai.df[i,2] - 40000
+
+  contig = fai.df[i,1]
+  contig_name <- contig %>% unlist(use.names = FALSE)
+  df1 <- filter(classified.df, chrom == contig_name)
+
+  df3 <- df1 %>% filter(start >= end)
+
+  mean_F <- mean(df3$F_freq)
+  mean_M <- mean(df3$M_freq)
+
+  median_F <- median(df2$F_freq)
+  median_M <- median(df2$M_freq)
+
+  output[i,1] <- contig_name
+  output[i,2] <- "end"
+  output[i,3] <- mean_F
+  output[i,4] <- mean_M
+  output[i,5] <- median_F
+  output[i,6] <- median_M
+
+}
+
+output %<>% data.frame()
+colnames(output) <- c("ID", "bin", "mean_F", "mean_M", "median_F", "median_M")
+
+write.csv(output, "summary_contig_end_180322.csv", row.names = FALSE)
+
+# interventions
+fai.df <- read.csv("./interventions.csv", header = TRUE)
+
+output <- matrix(data = NA, nrow=21, ncol=6)
+
+# contig start
+for (i in 1:nrow(fai.df)) {
+
+  contig = fai.df[i,1]
+  contig_name <- contig %>% unlist(use.names = FALSE)
+
+  old_contig = fai.df[i,2]
+  old_contig_name <- old_contig %>% unlist(use.names = FALSE)
+
+  old_start = fai.df[i,3]
+  old_end = fai.df[i,4]
+
+  df1 <- classified.df %>% filter(chrom == contig_name)
+  df1 <- filter(df1, start >= old_start)
+  df1 <- filter(df1, start <= old_end)
+
+  df2 <- df1 %>% filter(start <= 40000)
+
+  mean_F <- mean(df2$F_freq)
+  mean_M <- mean(df2$M_freq)
+
+  median_F <- median(df2$F_freq)
+  median_M <- median(df2$M_freq)
+
+  output[i,1] <- contig_name
+  output[i,2] <- old_contig_name
+  output[i,3] <- mean_F
+  output[i,4] <- mean_M
+  output[i,5] <- median_F
+  output[i,6] <- median_M
+
+}
+
+output %<>% data.frame()
+colnames(output) <- c("ID", "bin", "mean_F", "mean_M", "median_F", "median_M")
+
+write.csv(output, "summary_contig_start_interventions_180322.csv", row.names = FALSE)
+
+# ends
+output <- matrix(data = NA, nrow=21, ncol=6)
+
+for (i in 1:nrow(fai.df)) {
+
+  contig = fai.df[i,1]
+  contig_name <- contig %>% unlist(use.names = FALSE)
+
+  old_contig = fai.df[i,2]
+  old_contig_name <- old_contig %>% unlist(use.names = FALSE)
+
+  old_start = fai.df[i,3]
+  old_end = fai.df[i,4]
+
+  df1 <- classified.df %>% filter(chrom == contig_name)
+  df1 <- filter(df1, start >= old_start)
+  df1 <- filter(df1, start <= old_end)
+
+  df2 <- df1 %>% filter(start <= 40000)
+
+  mean_F <- mean(df2$F_freq)
+  mean_M <- mean(df2$M_freq)
+
+  median_F <- median(df2$F_freq)
+  median_M <- median(df2$M_freq)
+
+  output[i,1] <- contig_name
+  output[i,2] <- old_contig_name
+  output[i,3] <- mean_F
+  output[i,4] <- mean_M
+  output[i,5] <- median_F
+  output[i,6] <- median_M
+
+}
+
+output %<>% data.frame()
+colnames(output) <- c("ID", "bin", "mean_F", "mean_M", "median_F", "median_M")
+
+write.csv(output, "summary_contig_end_interventions_180322.csv", row.names = FALSE)
 ```
 
 ## contig end cov
@@ -301,15 +508,207 @@ samtools depth $ali2 | awk '{print $1"\t"$2"\t"$2+1"\t"$3}' | bedtools map -a  $
 cut -f 4 $ali2.40kbints_mean.txt | paste $ali1.40kbints_mean.txt - | awk '{print $1"\t"$2"\t"$3"\t"$4+$5}' > Combined_LR_female_asm.40kbints.mean.txt
 ```
 
-# high, medium and low methylated sites
+## classifying contig end cov
+
+## plot methylation and contig end cov
+
+```{r}
+library(readr)
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(viridis)
+
+dat <- read_csv("./../Results/Classifications_180322.csv", na = c("", "NA", "#N/A","#NUM!"))
+head(dat)
+
+dat$F_mean[is.na(dat$F_mean)] <- 0
+dat$M_mean[is.na(dat$M_mean)] <- 0
+
+dat[!complete.cases(dat), ]
+
+dat <- dat[ , c(1,5,13,17:20)]
+
+dat$repeat_size_mean <- as.factor(dat$repeat_size_mean)
+levels(dat$repeat_size_mean) <- list("Long" = "long", "Not repetitive" = "not_repetitive", "Short" = "short")
+
+dat$Set <- as.factor(dat$Set)
+levels(dat$Set) <- list("Autosomal and PAR" = "A", "Z-linked" = "Z", "W-linked" = "W")
+
+
+P <- ggplot(dat) +
+  geom_point(aes(x = log10((F_mean*100) + 1), y = log10(Mean_40kb + 1), colour = repeat_size_mean), size = 4, alpha = .5) + 
+  facet_grid(.~Set) + 
+  scale_color_viridis(discrete=TRUE) +
+  theme_bw() +
+  theme(text =element_text(size = 20)) + 
+  ylab("log10(mean coverage + 1)") + 
+  xlab("log10(mean methylated sites + 1) [%]")
+P <- P + guides(colour = guide_legend(title="Repeat \nclassification"))
+P
+#ggsave(plot = P,filename = "Methyl_end_cov_180322.png", height=8.5, width=17)
+```
+
+# high, medium and low methylated sites plot
 
 ```{r}
 
+library(readr)
+library(dplyr)
+
+options(warn = 1)
+
+# create list of col names
+cname <- c("chrom", "start", "mod.fwd", "mod.rev", "coverage", "M_mod.fwd", "M_mod.rev", "M_coverage", "F_modbase", "F_freq", "F_percentmodbase", "M_modbase", "M_freq", "M_percentmodbase", "Chromosome", "F_classification", "M_classification")
+
+# load data
+methobj2 <- read_delim("./Both_sexes_classified_sites_whole_mutated_reduced_combined_reads_InnerJoin_180322.tsv", col_names = cname, delim = "\t", skip=1)
+
+## FEMALE
+
+# total number of observations
+
+nrow(methobj2)
+
+summary(methobj2$F_percentmodbase)
+summary(methobj2$M_percentmodbase)
+
+# low_F coverage sites
+nrow(filter(methobj2, F_classification == "low_F"))
+
+# half coverage sites
+nrow(filter(methobj2, F_classification == "intermediate_F"))
+
+# full coverage sites
+nrow(filter(methobj2, F_classification == "high_F"))
+
+## MALE
+
+# low_M coverage sites
+nrow(filter(methobj2, M_classification == "low_M"))
+
+# half coverage sites
+nrow(filter(methobj2, M_classification == "intermediate_M"))
+
+# full coverage sites
+nrow(filter(methobj2, M_classification == "high_M"))
+
+```
+
+## plot high medium and low sites
+```{r}
+library(readr)
+library(ggplot2)
+library(viridis)
+library(reshape2)
+
+whole.df <- read_delim("./../Data/whole_bins_180322.txt", delim = " ", comment = c("#"))
+
+
+wholeF.df <- whole.df[2,c(1:4)]
+colnames(wholeF.df) <- c("ID", "Low", "Intermediate", "High")
+wholeF.df$sex <- "Female"
+
+wholeM.df <- whole.df[2,c(1,5:7)]
+colnames(wholeM.df) <- c("ID", "Low", "Intermediate", "High")
+wholeM.df$sex <- "Male"
+
+whole.df <- rbind(wholeF.df, wholeM.df)
+
+data2 <- melt(whole.df, id.vars = "sex", measure.vars = c("Low", "Intermediate", "High"), 
+              value.name="my_values", variable.name = "category")
+
+
+#!!! CONFIGURE YOUR PLOT HERE !!!
+# output
+my_output <- paste("D:/Thesis/Methylation/plot_whole_figure.png",sep="/")
+my_width <- 20
+my_height <- 15
+my_unit <- "cm"
+ 
+# Colors colours <- c("Female methylation" = "#fc8d59", "Male methylation" = "#0570b0",
+my_colors <- c("#fc8d59", "#0570b0")#, "#35608DFF")#,  "#1F988BFF")#c("#56B4E9", "#3492C7", "#F0E442", "#F04442")
+# Bar height ratio
+my_bar_height <- 0.75
+
+# Font 
+my_family <- "sans"
+my_size_ratio <- 1.2
+
+data2$sex <- factor(data2$sex)
+#levels(data2$sex)
+
+figure <- ggplot() + 
+  geom_bar(aes(y = my_values, x = category, fill = sex), position = position_dodge(), data = data2, stat="identity", 
+  width=my_bar_height) +
+  theme_gray(base_size = 8) +
+  scale_fill_manual(values = my_colors,labels =c("Female", "Male")) +
+  xlab("\nLevel of Methylation") + 
+  ylab("\nCount") +
+  theme(legend.position="right",legend.title = element_blank()) + 
+  theme(legend.text = element_text(family=my_family, size = rel(1.2)*my_size_ratio)) + 
+  theme(panel.background = element_rect(color="#FFFFFF", fill="white")) + 
+  theme(panel.grid.minor = element_blank()) + 
+  theme(panel.grid.major = element_blank()) +
+  theme(axis.text.y = element_text(family=my_family, colour = "black", size = rel(1.66)*my_size_ratio)) +
+  theme(axis.text.x = element_text(family=my_family, colour = "black", size = rel(1.66)*my_size_ratio)) + 
+  theme(axis.line = element_line(size=1*my_size_ratio, colour = "black")) + 
+  theme(axis.ticks.length = unit(.85, "cm")) + 
+  theme(axis.ticks.y = element_line(colour="white", size = 0)) + 
+  theme(axis.ticks.x = element_line(colour="#222222")) + 
+  theme(axis.ticks.length = unit(0.4, "cm")) + 
+  theme(axis.title.y = element_text(family=my_family, size=rel(1.2)*my_size_ratio)) +
+  theme(axis.title.x = element_text(family=my_family, size=rel(1.2)*my_size_ratio)) 
+
+  ggsave(plot=figure, file=my_output, width = my_width, height = my_height, unit = my_unit)
+figure
 ```
 
 # correlation plot
 
 ```{r}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(rlang)
+library(gridExtra)
+library(ggpubr)
+library(magrittr)
 
+options(warn = 1)
+
+# create list of col names
+cname <- c("chrom", "start", "mod.fwd", "mod.rev", "coverage", "M_mod.fwd", "M_mod.rev", "M_coverage", "F_modbase", "F_freq", "F_percentmodbase", "M_mod
+base", "M_freq", "M_percentmodbase")
+
+# load data
+methobj <- read.table("./No_W_contigs_mutated_reduced_combined_reads_InnerJoin_201221.tsv", col.names = cname, header = TRUE)
+
+# filter for sites with at least 4x coverage
+methobj <- filter(methobj, coverage >= 5)
+methobj <- filter(methobj, M_coverage >= 5)
+
+fai.df <- read.table("./../female_curated_151121.fa.fai", col.names = c("chrom", "len", "index", "bases", "bytes"), header = FALSE)
+
+fai.df %<>% filter(len >= 50000)
+fai.df <- fai.df[,c(1,2)]
+c <- pull(fai.df, chrom)
+
+methobj <- methobj[methobj$chrom %in% c , ]
+
+res2 <-cor.test(methobj$F_percentmodbase, methobj$M_percentmodbase,  method = "pearson")
+res2
+
+
+P <- ggscatter(data = methobj, x = "M_percentmodbase", y = "F_percentmodbase",
+        color = "black", alpha = .3,
+        add = "reg.line",
+        add.params = list(color = "blue", fill = "lightgray"),
+        conf.int = TRUE,
+        cor.coef = TRUE, cor.method = "pearson",
+        xlab = "Female 5mC %", ylab = "Male 5mC %")
+
+
+ggsave(plot = P, filename = "Over_50kb_pearson_cor_scatter.png", height = 8.5, width = 11)
 ```
 
